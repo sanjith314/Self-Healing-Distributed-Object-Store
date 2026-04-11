@@ -1,0 +1,3 @@
+com/objectstore/client/Client.class
+com/objectstore/client/NodeConnection.class
+com/objectstore/client/NodeConnection$StorageException.class

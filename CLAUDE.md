@@ -114,10 +114,10 @@ Instead of a flat list of hashes, root all shard hashes in a Merkle tree. Benefi
 
 ## Implementation Roadmap
 
-### Phase 1 — Single-Node Baseline
-- [ ] `StorageNode`: TCP server, handles `STORE` and `RETRIEVE` commands
-- [ ] `Client`: connects to one node, uploads a raw file, downloads it, confirms byte equality
-- [ ] Establish the wire protocol (even if just length-prefixed byte arrays)
+### Phase 1 — Single-Node Baseline ✅ COMPLETE
+- [x] `StorageNode`: TCP server, handles `STORE` and `RETRIEVE` commands
+- [x] `Client`: connects to one node, uploads a raw file, downloads it, confirms byte equality
+- [x] Establish the wire protocol (length-prefixed byte arrays over plain TCP sockets)
 
 ### Phase 2 — Hashing & Manifest *(do this before multi-node)*
 - [ ] Implement `ShardManifest` — maps `(fileId, shardIndex)` → `expectedSha256`
