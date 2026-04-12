@@ -111,6 +111,40 @@ public class NodeConnection implements AutoCloseable {
         return data;
     }
 
+    /**
+     * Sends a {@code GETHASH} request and returns the SHA-256 hex digest that
+     * the node recomputes on the fly from its stored bytes (Phase 2).
+     *
+     * <p>Returns {@code null} if the node responds with STATUS_ERROR (e.g. the
+     * shard is not found or an I/O error occurred on the node). Callers should
+     * treat a {@code null} response as an <em>erasure</em> for Reed-Solomon
+     * purposes — consistent with the "mismatch = erasure flag" design in
+     * {@code CLAUDE.md}.
+     *
+     * @param shardId unique shard identifier
+     * @return 64-character lowercase SHA-256 hex string, or {@code null} on node error
+     * @throws IOException on network or I/O error (distinct from a node STATUS_ERROR)
+     */
+    public String getHash(String shardId) throws IOException {
+        LOG.fine(String.format("[GETHASH] shard='%s'  →  %s:%d", shardId, host, port));
+
+        // Build request
+        out.writeByte(Protocol.CMD_GETHASH);
+        Protocol.writeString(out, shardId);
+        out.flush();
+
+        // Read response
+        byte status = in.readByte();
+        if (status != Protocol.STATUS_OK) {
+            LOG.fine("[GETHASH] STATUS_ERROR  shard='" + shardId + "'  → treating as erasure");
+            return null;  // caller treats this shard as absent / corrupt
+        }
+
+        String hexHash = Protocol.readString(in);
+        LOG.fine(String.format("[GETHASH] OK  shard='%s'  hash=%s", shardId, hexHash));
+        return hexHash;
+    }
+
     // -----------------------------------------------------------------------
     // AutoCloseable
     // -----------------------------------------------------------------------

@@ -1,6 +1,7 @@
 package com.objectstore.node;
 
 import com.objectstore.common.Protocol;
+import com.objectstore.common.HashUtil;
 
 import java.io.*;
 import java.net.ServerSocket;
@@ -91,6 +92,7 @@ public class StorageNode {
             switch (command) {
                 case Protocol.CMD_STORE    -> handleStore(in, out, remote);
                 case Protocol.CMD_RETRIEVE -> handleRetrieve(in, out, remote);
+                case Protocol.CMD_GETHASH  -> handleGetHash(in, out, remote);
                 default -> {
                     LOG.warning("Unknown command 0x" + Integer.toHexString(command & 0xFF) + " from " + remote);
                     out.writeByte(Protocol.STATUS_ERROR);
@@ -152,6 +154,49 @@ public class StorageNode {
         } catch (IOException e) {
             LOG.log(Level.SEVERE, "[RETRIEVE] Failed to read shard '" + shardId + "'", e);
             // Can't change the status byte now; signal error by closing
+            throw e;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // GETHASH handler (Phase 2)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Handles a {@code GETHASH} request.
+     *
+     * <p>Reads the shard from disk, recomputes its SHA-256 hash on the fly,
+     * and returns the hex digest. The hash is <em>never</em> cached: forcing
+     * a fresh computation prevents a Byzantine node from serving a pre-stored
+     * fake hash for corrupted data.
+     *
+     * <p>Wire response on OK:
+     * <pre>
+     * STATUS_OK (1 byte) | hash-string-length (4 bytes) | hex-digest (64 bytes)
+     * </pre>
+     */
+    private void handleGetHash(DataInputStream in, DataOutputStream out, String remote) throws IOException {
+        String shardId = Protocol.readString(in);
+
+        LOG.info(String.format("[GETHASH] shard='%s'  from=%s", shardId, remote));
+
+        Path target = shardPath(shardId);
+        if (!Files.exists(target)) {
+            LOG.warning("[GETHASH] Not found: shard='" + shardId + "'");
+            out.writeByte(Protocol.STATUS_ERROR);
+            out.flush();
+            return;
+        }
+
+        try {
+            byte[] data   = Files.readAllBytes(target);
+            String hexHash = HashUtil.sha256Hex(data);
+            out.writeByte(Protocol.STATUS_OK);
+            Protocol.writeString(out, hexHash);
+            out.flush();
+            LOG.info(String.format("[GETHASH] OK  shard='%s'  hash=%s", shardId, hexHash));
+        } catch (IOException e) {
+            LOG.log(Level.SEVERE, "[GETHASH] Failed to read shard '" + shardId + "'", e);
             throw e;
         }
     }

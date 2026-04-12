@@ -119,12 +119,12 @@ Instead of a flat list of hashes, root all shard hashes in a Merkle tree. Benefi
 - [x] `Client`: connects to one node, uploads a raw file, downloads it, confirms byte equality
 - [x] Establish the wire protocol (length-prefixed byte arrays over plain TCP sockets)
 
-### Phase 2 — Hashing & Manifest *(do this before multi-node)*
-- [ ] Implement `ShardManifest` — maps `(fileId, shardIndex)` → `expectedSha256`
-- [ ] Client computes SHA-256 on every chunk before sending
-- [ ] Client re-verifies hash on every received chunk
-- [ ] Unit test: flip one byte in the received data and confirm detection
-- [ ] `StorageNode` adds `GETHASH` command (recomputes from stored bytes on the fly)
+### Phase 2 — Hashing & Manifest ✅ COMPLETE
+- [x] Implement `ShardManifest` — maps `(fileId, shardIndex)` → `expectedSha256`
+- [x] Client computes SHA-256 on every chunk before sending
+- [x] Client re-verifies hash on every received chunk
+- [x] Unit test: flip one byte in the received data and confirm detection
+- [x] `StorageNode` adds `GETHASH` command (recomputes from stored bytes on the fly)
 
 > **Why Phase 2 before Phase 3?** Hash logic is easiest to unit-test in isolation on a single node. Debugging a hash mismatch while also debugging multi-node fanout is significantly harder.
 

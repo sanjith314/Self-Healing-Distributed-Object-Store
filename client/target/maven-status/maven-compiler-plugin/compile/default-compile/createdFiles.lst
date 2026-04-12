@@ -1,3 +1,5 @@
-com/objectstore/client/Client.class
 com/objectstore/client/NodeConnection.class
+com/objectstore/client/ShardManifest.class
+com/objectstore/client/Client.class
 com/objectstore/client/NodeConnection$StorageException.class
+com/objectstore/client/ShardManifest$ShardKey.class

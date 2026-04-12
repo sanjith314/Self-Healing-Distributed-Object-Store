@@ -1,5 +1,7 @@
 package com.objectstore.client;
 
+import com.objectstore.common.HashUtil;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -8,23 +10,25 @@ import java.util.Arrays;
 import java.util.logging.Logger;
 
 /**
- * Entry point for the Phase 1 single-node client demo.
+ * Entry point for the distributed object store client.
  *
- * <p>Supports two sub-commands via the command line:
+ * <p>Supports the following sub-commands via the command line:
  *
  * <pre>
- * # Upload a file to a storage node
- * java -jar client.jar upload &lt;file&gt; &lt;shardId&gt; &lt;host&gt; &lt;port&gt;
- *
- * # Download a shard from a storage node
+ * # Phase 1 — raw round-trip (no hashing)
+ * java -jar client.jar upload   &lt;file&gt; &lt;shardId&gt; &lt;host&gt; &lt;port&gt;
  * java -jar client.jar download &lt;shardId&gt; &lt;outputFile&gt; &lt;host&gt; &lt;port&gt;
+ * java -jar client.jar demo     &lt;file&gt; &lt;shardId&gt; &lt;host&gt; &lt;port&gt;
  *
- * # Upload, then download, then verify byte equality (self-contained demo)
- * java -jar client.jar demo &lt;file&gt; &lt;shardId&gt; &lt;host&gt; &lt;port&gt;
+ * # Phase 2 — hash-verified round-trip + corruption detection
+ * java -jar client.jar hash-demo &lt;file&gt; &lt;shardId&gt; &lt;host&gt; &lt;port&gt;
  * </pre>
  *
- * <p>The {@code demo} sub-command performs the full round-trip and exits with
- * code 0 on success or 1 if the downloaded bytes differ from the originals.
+ * <p>The {@code demo} sub-command performs the raw Phase 1 round-trip.
+ * The {@code hash-demo} sub-command performs the Phase 2 round-trip:
+ * SHA-256 is fingerprinted before upload, the node's stored hash is
+ * verified via {@code GETHASH}, and the downloaded bytes are re-verified
+ * client-side. A corruption detection demo (byte flip) is also run.
  */
 public class Client {
 
@@ -127,6 +131,110 @@ public class Client {
     }
 
     // -----------------------------------------------------------------------
+    // Phase 2 — hash‑verified round‑trip
+    // -----------------------------------------------------------------------
+
+    /**
+     * Phase 2 end-to-end demo: upload → GETHASH verification → download →
+     * client-side SHA-256 verification → corruption detection test.
+     *
+     * <p>Steps:
+     * <ol>
+     *   <li>Read the file and compute its SHA-256 locally.</li>
+     *   <li>Register the shard in a {@link ShardManifest}.</li>
+     *   <li>Upload the shard to the storage node.</li>
+     *   <li>Ask the node to recompute its hash via {@code GETHASH} and compare
+     *       against the manifest.</li>
+     *   <li>Download the shard and re-verify the hash client-side.</li>
+     *   <li>Run a corruption-detection sub-test: flip one byte in the received
+     *       data and confirm the manifest catches it.</li>
+     * </ol>
+     *
+     * @param filePath source file
+     * @param shardIndex shard index (typically 0 for a single-shard Phase 2 demo)
+     * @param fileId logical file identifier to use in the manifest
+     * @param host   storage node hostname
+     * @param port   storage node TCP port
+     * @return {@code true} if every check passed
+     */
+    public boolean hashVerifyRoundTrip(
+            Path filePath, int shardIndex, String fileId,
+            String host, int port) throws IOException {
+
+        System.out.println();
+        System.out.println("=" .repeat(55));
+        System.out.println(" Phase 2 — Hash-Verified Round-Trip");
+        System.out.println("=" .repeat(55));
+        System.out.printf("  File     : %s%n", filePath.toAbsolutePath());
+        System.out.printf("  File ID  : %s%n", fileId);
+        System.out.printf("  Shard idx: %d%n", shardIndex);
+        System.out.printf("  Node     : %s:%d%n%n", host, port);
+
+        // ---- 1. Read + fingerprint ----------------------------------------
+        byte[] original = Files.readAllBytes(filePath);
+        ShardManifest manifest = new ShardManifest(fileId);
+        String expectedHex = manifest.registerShard(shardIndex, original);
+        System.out.printf("[1/5] Computed SHA-256: %s%n", expectedHex);
+        System.out.printf("      (%d bytes read from disk)%n", original.length);
+
+        // ---- 2. Upload -------------------------------------------------------
+        String shardId = manifest.shardId(shardIndex);
+        try (NodeConnection conn = new NodeConnection(host, port)) {
+            conn.store(shardId, original);
+        }
+        System.out.printf("%n[2/5] STORE   → OK  (shardId='%s')%n", shardId);
+
+        // ---- 3. GETHASH from node -------------------------------------------
+        String nodeHash;
+        try (NodeConnection conn = new NodeConnection(host, port)) {
+            nodeHash = conn.getHash(shardId);
+        }
+        if (nodeHash == null) {
+            System.out.printf("%n[3/5] GETHASH → ERROR (node returned STATUS_ERROR)%n");
+            System.out.println("\u274c  FAIL — node could not compute hash.");
+            return false;
+        }
+        boolean nodeHashMatch = expectedHex.equals(nodeHash);
+        System.out.printf("%n[3/5] GETHASH → %s%n", nodeHash);
+        System.out.printf("      Expected : %s%n", expectedHex);
+        System.out.printf("      Match    : %s%n", nodeHashMatch ? "✅ YES" : "❌ NO");
+        if (!nodeHashMatch) {
+            System.out.println("\n❌  FAIL — stored bytes are already corrupt on the node!");
+            return false;
+        }
+
+        // ---- 4. Download + client-side verify --------------------------------
+        byte[] downloaded;
+        try (NodeConnection conn = new NodeConnection(host, port)) {
+            downloaded = conn.retrieve(shardId);
+        }
+        boolean clientVerify = manifest.verify(shardIndex, downloaded);
+        System.out.printf("%n[4/5] RETRIEVE → OK  (%d bytes)%n", downloaded.length);
+        System.out.printf("      Client SHA-256 verify : %s%n",
+                clientVerify ? "✅ PASS" : "❌ FAIL");
+
+        // ---- 5. Corruption-detection sub-test --------------------------------
+        System.out.printf("%n[5/5] Corruption-detection test:%n");
+        byte[] corrupted = Arrays.copyOf(downloaded, downloaded.length);
+        corrupted[0] ^= (byte) 0xFF;  // flip all bits in the first byte
+        boolean corruptDetected = !manifest.verify(shardIndex, corrupted);
+        System.out.printf("      Flipped byte 0: 0x%02X → 0x%02X%n",
+                downloaded[0] & 0xFF, corrupted[0] & 0xFF);
+        System.out.printf("      Corruption detected : %s%n",
+                corruptDetected ? "✅ YES (PASS)" : "❌ NOT DETECTED (FAIL)");
+
+        boolean allPassed = nodeHashMatch && clientVerify && corruptDetected;
+        System.out.println();
+        if (allPassed) {
+            System.out.println("✅  ALL Phase 2 checks PASSED.");
+        } else {
+            System.out.println("❌  One or more Phase 2 checks FAILED.");
+        }
+        System.out.println("=".repeat(55));
+        return allPassed;
+    }
+
+    // -----------------------------------------------------------------------
     // Entry point
     // -----------------------------------------------------------------------
 
@@ -170,6 +278,17 @@ public class Client {
                     String host    = args[3];
                     int    port    = Integer.parseInt(args[4]);
                     boolean ok = client.roundTripVerify(file, shardId, host, port);
+                    System.exit(ok ? 0 : 1);
+                }
+
+                case "hash-demo" -> {
+                    // hash-demo <file> <shardId-or-fileId> <host> <port>
+                    requireArgs(args, 5, "hash-demo");
+                    Path   file    = Paths.get(args[1]);
+                    String fileId  = args[2];
+                    String host    = args[3];
+                    int    port    = Integer.parseInt(args[4]);
+                    boolean ok = client.hashVerifyRoundTrip(file, 0, fileId, host, port);
                     System.exit(ok ? 0 : 1);
                 }
 

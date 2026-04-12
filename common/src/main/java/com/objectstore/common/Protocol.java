@@ -12,9 +12,9 @@ import java.nio.charset.StandardCharsets;
  * handles exactly <em>one</em> request–response pair and is then closed by
  * the client.
  *
- * <h2>Request format</h2>
+ * <h2>Request format (shared header)</h2>
  * <pre>
- * [1 byte]   command   — CMD_STORE (0x01) | CMD_RETRIEVE (0x02)
+ * [1 byte]   command   — CMD_STORE (0x01) | CMD_RETRIEVE (0x02) | CMD_GETHASH (0x03)
  * [4 bytes]  shardId length in bytes (big-endian int)
  * [N bytes]  shardId encoded as UTF-8
  * -- STORE only --
@@ -34,6 +34,19 @@ import java.nio.charset.StandardCharsets;
  * [8 bytes]  data length in bytes (big-endian long)
  * [M bytes]  raw shard data
  * </pre>
+ *
+ * <h2>Response format — GETHASH (Phase 2)</h2>
+ * <pre>
+ * [1 byte]   status — STATUS_OK (0x00) | STATUS_ERROR (0x01)
+ * -- only on OK --
+ * [4 bytes]  hash string length in bytes (big-endian int)
+ * [H bytes]  SHA-256 hex digest encoded as UTF-8  (always 64 chars = 64 bytes)
+ * </pre>
+ *
+ * <p><strong>Security note</strong>: The node recomputes the hash from its
+ * stored bytes on every {@code GETHASH} request. It does <em>not</em> cache
+ * the hash. A Byzantine node that cached a pre-computed hash could serve a
+ * correct hash for corrupted data; forcing a recomputation closes that vector.
  */
 public final class Protocol {
 
@@ -46,6 +59,15 @@ public final class Protocol {
 
     /** Retrieve a shard from the node. */
     public static final byte CMD_RETRIEVE = 0x02;
+
+    /**
+     * Returns the SHA-256 hex digest of a stored shard (Phase 2).
+     *
+     * <p>The node recomputes the hash on every request — it does <em>not</em>
+     * store hashes. This prevents a Byzantine node from caching a fake hash
+     * for corrupted data.
+     */
+    public static final byte CMD_GETHASH  = 0x03;
 
     // -----------------------------------------------------------------------
     // Status bytes

@@ -28,5 +28,31 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
-    <!-- No shared dependencies in Phase 1 — pure JDK only -->
+    <!-- Shared dependency versions (child POMs inherit via dependencyManagement) -->
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- JUnit 5 BOM — resolves all org.junit.jupiter versions consistently -->
+            <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>5.10.2</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <!-- Maven Surefire 3.x is required to discover JUnit 5 tests -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>3.2.5</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
 </project>
