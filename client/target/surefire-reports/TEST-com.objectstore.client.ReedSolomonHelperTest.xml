@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="com.objectstore.client.HashVerificationTest" time="0.023" tests="14" errors="0" skipped="0" failures="0">
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="com.objectstore.client.ReedSolomonHelperTest" time="0.029" tests="17" errors="0" skipped="0" failures="0">
   <properties>
     <property name="java.specification.version" value="17"/>
     <property name="sun.jnu.encoding" value="UTF-8"/>
@@ -56,18 +56,21 @@
     <property name="socksNonProxyHosts" value="local|*.local|169.254/16|*.169.254/16"/>
     <property name="java.class.version" value="61.0"/>
   </properties>
-  <testcase name="emptyShardData_canBeRegisteredAndVerified" classname="com.objectstore.client.HashVerificationTest" time="0.011"/>
-  <testcase name="verify_copyOfBytes_returnsTrue" classname="com.objectstore.client.HashVerificationTest" time="0.001"/>
-  <testcase name="appendedBytes_areDetectedByManifest" classname="com.objectstore.client.HashVerificationTest" time="0.001"/>
-  <testcase name="registerShard_returnsCorrectHex" classname="com.objectstore.client.HashVerificationTest" time="0.001"/>
-  <testcase name="flipLastByte_isDetectedByManifest" classname="com.objectstore.client.HashVerificationTest" time="0.0"/>
-  <testcase name="differentBytes_areDetectedByManifest" classname="com.objectstore.client.HashVerificationTest" time="0.001"/>
-  <testcase name="truncatedData_isDetectedByManifest" classname="com.objectstore.client.HashVerificationTest" time="0.0"/>
-  <testcase name="multipleShards_allVerifyCorrectly" classname="com.objectstore.client.HashVerificationTest" time="0.001"/>
-  <testcase name="verify_identicalBytes_returnsTrue" classname="com.objectstore.client.HashVerificationTest" time="0.001"/>
-  <testcase name="shardId_format" classname="com.objectstore.client.HashVerificationTest" time="0.001"/>
-  <testcase name="expectedHash_returnsRegisteredHash" classname="com.objectstore.client.HashVerificationTest" time="0.0"/>
-  <testcase name="corruptShard_doesNotAffectNeighbours" classname="com.objectstore.client.HashVerificationTest" time="0.001"/>
-  <testcase name="flipOneByte_isDetectedByManifest" classname="com.objectstore.client.HashVerificationTest" time="0.0"/>
-  <testcase name="expectedHash_unregisteredIndex_throws" classname="com.objectstore.client.HashVerificationTest" time="0.001"/>
+  <testcase name="decode_maxErasures_twoParity" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.011"/>
+  <testcase name="shardSize_roundsUp" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.0"/>
+  <testcase name="roundTrip_singleByte" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.001"/>
+  <testcase name="constants_areCorrect" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.0"/>
+  <testcase name="decode_bothParityShardsLost" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.001"/>
+  <testcase name="roundTrip_unevenDataSize" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.0"/>
+  <testcase name="roundTrip_noErasures_4KBdata" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.0"/>
+  <testcase name="decode_hashMismatch_treatedAsErasure" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.001"/>
+  <testcase name="roundTrip_noErasures_shortString" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.0"/>
+  <testcase name="encode_emptyData_throws" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.001"/>
+  <testcase name="decode_allShardsGone_throws" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.003"/>
+  <testcase name="decode_wrongShardsLength_throws" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.0"/>
+  <testcase name="decode_tooFewShards_throws" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.0"/>
+  <testcase name="encode_nullData_throws" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.001"/>
+  <testcase name="decode_twoDataShardsLost_nonConsecutive" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.0"/>
+  <testcase name="decode_parityShardMissing" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.001"/>
+  <testcase name="decode_shard0Missing" classname="com.objectstore.client.ReedSolomonHelperTest" time="0.0"/>
 </testsuite>

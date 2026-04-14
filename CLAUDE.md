@@ -1,4 +1,4 @@
-# CLAUDE.md — Distributed Object Store with Integrity
+# AGENTS.md — Distributed Object Store with Integrity
 
 ## Project Overview
 
@@ -128,11 +128,11 @@ Instead of a flat list of hashes, root all shard hashes in a Merkle tree. Benefi
 
 > **Why Phase 2 before Phase 3?** Hash logic is easiest to unit-test in isolation on a single node. Debugging a hash mismatch while also debugging multi-node fanout is significantly harder.
 
-### Phase 3 — Erasure Coding & Multi-Node Distribution
-- [ ] Integrate Backblaze RS library; unit test `encode → decode` round-trip locally
-- [ ] `Client.upload(file)`: split into `k` data shards → encode `n - k` parity shards → upload shard `i` to node `i`
-- [ ] `Client.download(fileId)`: fetch all reachable shards in parallel → verify hashes → pass erasure flags to RS decoder → reconstruct
-- [ ] Test with one node offline; confirm successful reconstruction
+### Phase 3 — Erasure Coding & Multi-Node Distribution ✅ COMPLETE
+- [x] Integrate Backblaze RS library; unit test `encode → decode` round-trip locally
+- [x] `Client.upload(file)`: split into `k` data shards → encode `n - k` parity shards → upload shard `i` to node `i`
+- [x] `Client.download(fileId)`: fetch all reachable shards in parallel → verify hashes → pass erasure flags to RS decoder → reconstruct
+- [x] Test with one node offline; confirm successful reconstruction
 
 ### Phase 4 — Auditor (Self-Healing)
 - [ ] `Auditor` process receives a copy of the signed manifest at upload time

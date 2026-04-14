@@ -40,6 +40,13 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+
+            <!-- Backblaze Reed-Solomon erasure coding library (Phase 3) -->
+            <dependency>
+                <groupId>com.backblaze.erasure</groupId>
+                <artifactId>JavaReedSolomon</artifactId>
+                <version>1.0.3</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 

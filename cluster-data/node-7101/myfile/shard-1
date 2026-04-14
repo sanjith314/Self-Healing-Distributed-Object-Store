@@ -1,0 +1,5 @@
+.
+It will be uploaded to a StorageNode, downloaded back, and verified for byte-for-byte integrity.
+
+--- Sample Data ---
+Line 1: T

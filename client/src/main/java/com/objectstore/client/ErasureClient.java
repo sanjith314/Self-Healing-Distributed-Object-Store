@@ -1,0 +1,327 @@
+package com.objectstore.client;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+/**
+ * Multi-node upload / download engine for the distributed object store.
+ *
+ * <p>Implements the Phase 3 upload and download paths:
+ *
+ * <h2>Upload</h2>
+ * <ol>
+ *   <li>Read the file bytes and run Reed-Solomon encoding to produce
+ *       {@code dataShards + parityShards} equal-size chunks.</li>
+ *   <li>SHA-256 fingerprint every chunk and register it in the
+ *       {@link ShardManifest}.</li>
+ *   <li>Fan out all {@code n} STORE commands in parallel, one per node.</li>
+ *   <li>Return the fully-populated manifest to the caller (kept client-side).</li>
+ * </ol>
+ *
+ * <h2>Download</h2>
+ * <ol>
+ *   <li>Fan out all {@code n} RETRIEVE commands in parallel.</li>
+ *   <li>Verify each response against the manifest; treat hash mismatches and
+ *       node failures (IOException) as <em>erasures</em> — {@code present[i] = false}.</li>
+ *   <li>Abort with {@link ReedSolomonHelper.InsufficientShardsException} if fewer
+ *       than {@code k} shards are healthy.</li>
+ *   <li>Pass shards + erasure mask to Reed-Solomon reconstruction.</li>
+ *   <li>Strip zero-padding using the manifest's recorded original file length.</li>
+ *   <li>Write the reconstructed bytes to the output path and return it.</li>
+ * </ol>
+ *
+ * <h2>NodeAddress</h2>
+ * <p>Node addresses are supplied as {@link NodeAddress} records containing
+ * a host string and a port integer.  The convenience factory
+ * {@link NodeAddress#parse(String)} accepts {@code "host:port"} strings
+ * (e.g. {@code "localhost:7100"}).
+ */
+public class ErasureClient {
+
+    private static final Logger LOG = Logger.getLogger(ErasureClient.class.getName());
+
+    /** Thread pool for parallel node I/O — one thread per shard in the worst case. */
+    private final ExecutorService executor;
+
+    /** Default RS parameters — (6, 4): 4 data + 2 parity shards. */
+    private final int dataShards;
+    private final int parityShards;
+
+    // -----------------------------------------------------------------------
+    // Constructors
+    // -----------------------------------------------------------------------
+
+    /** Creates an ErasureClient with the default (6, 4) RS parameters. */
+    public ErasureClient() {
+        this(ReedSolomonHelper.DATA_SHARDS, ReedSolomonHelper.PARITY_SHARDS);
+    }
+
+    /**
+     * Creates an ErasureClient with custom RS parameters.
+     *
+     * @param dataShards   number of data shards (k)
+     * @param parityShards number of parity shards (n - k)
+     */
+    public ErasureClient(int dataShards, int parityShards) {
+        this.dataShards   = dataShards;
+        this.parityShards = parityShards;
+        this.executor     = Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r, "erasure-io");
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Upload
+    // -----------------------------------------------------------------------
+
+    /**
+     * Encodes {@code filePath} with Reed-Solomon and distributes all shards
+     * across the given nodes in parallel.
+     *
+     * <p>Exactly one shard is sent to each node: shard {@code i} → {@code nodes.get(i)}.
+     * The number of nodes must equal {@code dataShards + parityShards}.
+     *
+     * @param filePath     source file to encode and distribute
+     * @param fileId       logical file identifier (used as shard-ID prefix in the manifest)
+     * @param nodes        ordered list of node addresses (one per shard)
+     * @return the populated {@link ShardManifest} (caller must keep this client-side)
+     * @throws IOException                  if the file cannot be read or any node STORE fails
+     * @throws IllegalArgumentException     if {@code nodes.size() != dataShards + parityShards}
+     */
+    public ShardManifest upload(Path filePath, String fileId, List<NodeAddress> nodes)
+            throws IOException {
+
+        int totalShards = dataShards + parityShards;
+        if (nodes.size() != totalShards) {
+            throw new IllegalArgumentException(
+                    "Expected " + totalShards + " nodes but got " + nodes.size());
+        }
+
+        System.out.println();
+        System.out.println("=".repeat(60));
+        System.out.println(" Phase 3 — RS Upload");
+        System.out.println("=".repeat(60));
+        System.out.printf("  File        : %s%n", filePath.toAbsolutePath());
+        System.out.printf("  File ID     : %s%n", fileId);
+        System.out.printf("  RS params   : (%d data + %d parity = %d total shards)%n",
+                dataShards, parityShards, totalShards);
+
+        // ---- 1. Read file & encode ------------------------------------------
+        byte[] data = Files.readAllBytes(filePath);
+        long   originalLength = data.length;
+        System.out.printf("%n[1/3] Read %d bytes from disk.%n", originalLength);
+
+        byte[][] shards = ReedSolomonHelper.encode(data, dataShards, parityShards);
+        int shardSize = shards[0].length;
+        System.out.printf("[1/3] Encoded → %d shards of %d bytes each (%.1f%% overhead).%n",
+                totalShards, shardSize,
+                100.0 * (totalShards * shardSize - originalLength) / originalLength);
+
+        // ---- 2. Build manifest -----------------------------------------------
+        ShardManifest manifest = new ShardManifest(fileId);
+        manifest.setRsMetadata(dataShards, totalShards, originalLength);
+
+        for (int i = 0; i < totalShards; i++) {
+            String hash = manifest.registerShard(i, shards[i]);
+            manifest.addNodeAddress(nodes.get(i).toHostPort());
+            LOG.fine(String.format("  shard %d → %s  hash=%s", i, nodes.get(i).toHostPort(), hash));
+        }
+        System.out.printf("[2/3] Manifest built: %d shard hashes recorded.%n", totalShards);
+
+        // ---- 3. Fan-out STORE in parallel ------------------------------------
+        System.out.printf("[3/3] Uploading %d shards in parallel...%n", totalShards);
+        List<CompletableFuture<Void>> futures = new ArrayList<>(totalShards);
+
+        for (int i = 0; i < totalShards; i++) {
+            final int     idx  = i;
+            final byte[]  shard = shards[i];
+            final NodeAddress node = nodes.get(i);
+            final String  shardId  = manifest.shardId(i);
+
+            futures.add(CompletableFuture.runAsync(() -> {
+                try (NodeConnection conn = new NodeConnection(node.host(), node.port())) {
+                    conn.store(shardId, shard);
+                    System.out.printf("  ✅ shard %d → %s  (%d bytes)%n", idx, node.toHostPort(), shard.length);
+                } catch (IOException e) {
+                    throw new RuntimeException(
+                            "STORE failed for shard " + idx + " on " + node.toHostPort(), e);
+                }
+            }, executor));
+        }
+
+        // Wait for all uploads, collect errors
+        try {
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        } catch (Exception e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            throw new IOException("One or more shard uploads failed: " + cause.getMessage(), cause);
+        }
+
+        System.out.println();
+        System.out.printf("✅  Upload complete — manifest: %s%n%n", manifest);
+        System.out.println("=".repeat(60));
+
+        return manifest;
+    }
+
+    // -----------------------------------------------------------------------
+    // Download
+    // -----------------------------------------------------------------------
+
+    /**
+     * Downloads and reconstructs a file from at least {@code k} healthy shards.
+     *
+     * <p>Node addresses are read from the manifest's {@code nodeAddresses} list,
+     * so the caller does not need to supply them separately.
+     *
+     * @param fileId     logical file identifier (must match the uploaded fileId)
+     * @param manifest   the client-held manifest from the upload phase
+     * @param outputPath where to write the reconstructed file
+     * @return {@code outputPath} on success
+     * @throws IOException on unrecoverable I/O error
+     * @throws ReedSolomonHelper.InsufficientShardsException if fewer than {@code k} shards
+     *         are healthy enough to allow reconstruction
+     */
+    public Path download(String fileId, ShardManifest manifest, Path outputPath)
+            throws IOException {
+
+        int total = manifest.getTotalShards();
+        int k     = manifest.getDataShards();
+
+        System.out.println();
+        System.out.println("=".repeat(60));
+        System.out.println(" Phase 3 — RS Download");
+        System.out.println("=".repeat(60));
+        System.out.printf("  File ID    : %s%n", fileId);
+        System.out.printf("  Output     : %s%n", outputPath.toAbsolutePath());
+        System.out.printf("  RS params  : (need %d of %d shards)%n%n", k, total);
+
+        // ---- 1. Fan-out RETRIEVE in parallel ---------------------------------
+        byte[][] shards  = new byte[total][];
+        boolean[] present = new boolean[total];
+        AtomicInteger goodCount = new AtomicInteger(0);
+
+        List<CompletableFuture<Void>> futures = new ArrayList<>(total);
+
+        for (int i = 0; i < total; i++) {
+            final int idx = i;
+            final String hostPort = manifest.getNodeAddress(i);
+            final String shardId  = manifest.shardId(i);
+            final NodeAddress node = NodeAddress.parse(hostPort);
+
+            futures.add(CompletableFuture.runAsync(() -> {
+                try (NodeConnection conn = new NodeConnection(node.host(), node.port())) {
+                    byte[] bytes = conn.retrieve(shardId);
+
+                    // Hash-verify — mismatch = erasure (AGENTS.md: "mismatch = erasure flag")
+                    if (!manifest.verify(idx, bytes)) {
+                        System.out.printf("  ❌ shard %d [%s] — HASH MISMATCH (treating as erasure)%n",
+                                idx, hostPort);
+                        // leave present[idx] = false
+                        return;
+                    }
+
+                    shards[idx]  = bytes;
+                    present[idx] = true;
+                    goodCount.incrementAndGet();
+                    System.out.printf("  ✅ shard %d [%s] — OK (%d bytes)%n",
+                            idx, hostPort, bytes.length);
+
+                } catch (IOException e) {
+                    System.out.printf("  ⚠️  shard %d [%s] — UNREACHABLE (%s)%n",
+                            idx, hostPort, e.getMessage());
+                    // present[idx] remains false — treated as erasure
+                }
+            }, executor));
+        }
+
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        System.out.printf("%n[2/3] Retrieved %d / %d shards successfully.%n", goodCount.get(), total);
+
+        // ---- 2. Guard: quorum check -----------------------------------------
+        if (goodCount.get() < k) {
+            throw new ReedSolomonHelper.InsufficientShardsException(
+                    "Only " + goodCount.get() + " healthy shards available; need " + k
+                    + " to reconstruct. System is in an unrecoverable state.");
+        }
+
+        // ---- 3. Reed-Solomon reconstruction ---------------------------------
+        System.out.println("[3/3] Running Reed-Solomon reconstruction...");
+        byte[] reconstructed = ReedSolomonHelper.decode(
+                shards, present, k, total - k, manifest.getOriginalFileLength());
+
+        // ---- 4. Write output -------------------------------------------------
+        Files.createDirectories(outputPath.getParent() == null
+                ? outputPath.toAbsolutePath().getParent() : outputPath.getParent());
+        Files.write(outputPath, reconstructed);
+
+        System.out.printf("%n✅  Reconstruction complete — wrote %d bytes to '%s'%n",
+                reconstructed.length, outputPath);
+        System.out.println("=".repeat(60));
+
+        return outputPath;
+    }
+
+    // -----------------------------------------------------------------------
+    // Shutdown
+    // -----------------------------------------------------------------------
+
+    /** Shuts down the internal thread pool. Call when the client is done. */
+    public void shutdown() {
+        executor.shutdown();
+    }
+
+    // -----------------------------------------------------------------------
+    // NodeAddress record
+    // -----------------------------------------------------------------------
+
+    /**
+     * Immutable holder for a storage node's hostname and TCP port.
+     *
+     * @param host hostname or IP address
+     * @param port TCP port
+     */
+    public record NodeAddress(String host, int port) {
+
+        /**
+         * Parses a {@code "host:port"} string into a {@link NodeAddress}.
+         *
+         * @param hostPort string in the form {@code "localhost:7100"}
+         * @return parsed address
+         * @throws IllegalArgumentException if the format is invalid
+         */
+        public static NodeAddress parse(String hostPort) {
+            int colon = hostPort.lastIndexOf(':');
+            if (colon < 0) {
+                throw new IllegalArgumentException(
+                        "Expected 'host:port', got: '" + hostPort + "'");
+            }
+            String h = hostPort.substring(0, colon);
+            int    p;
+            try {
+                p = Integer.parseInt(hostPort.substring(colon + 1));
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(
+                        "Port is not an integer in '" + hostPort + "'", e);
+            }
+            return new NodeAddress(h, p);
+        }
+
+        /** Returns the {@code "host:port"} string representation. */
+        public String toHostPort() {
+            return host + ":" + port;
+        }
+    }
+}

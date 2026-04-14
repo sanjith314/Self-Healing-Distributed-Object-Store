@@ -1,0 +1,23 @@
+Apr 14, 2026 8:45:16 AM com.objectstore.node.StorageNode start
+INFO: StorageNode starting on port 7105  |  data dir: /Users/sanjithjayasankar/Documents/gitrepo/Self-Healing-Distributed-Object-Store/cluster-data/node-7105
+Apr 14, 2026 8:45:17 AM com.objectstore.node.StorageNode handleConnection
+WARNING: I/O error handling connection from /[0:0:0:0:0:0:0:1]:49819
+java.io.EOFException
+	at java.base/java.io.DataInputStream.readUnsignedByte(DataInputStream.java:290)
+	at java.base/java.io.DataInputStream.readByte(DataInputStream.java:268)
+	at com.objectstore.node.StorageNode.handleConnection(StorageNode.java:90)
+	at com.objectstore.node.StorageNode.lambda$start$1(StorageNode.java:75)
+	at java.base/java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:539)
+	at java.base/java.util.concurrent.FutureTask.run(FutureTask.java:264)
+	at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1136)
+	at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:635)
+	at java.base/java.lang.Thread.run(Thread.java:840)
+
+Apr 14, 2026 8:45:26 AM com.objectstore.node.StorageNode handleStore
+INFO: [STORE] shard='myfile/shard-5'  bytes=129  from=/127.0.0.1:49821
+Apr 14, 2026 8:45:26 AM com.objectstore.node.StorageNode handleStore
+INFO: [STORE] OK  shard='myfile/shard-5'
+Apr 14, 2026 8:45:31 AM com.objectstore.node.StorageNode handleRetrieve
+INFO: [RETRIEVE] shard='myfile/shard-5'  from=/127.0.0.1:49830
+Apr 14, 2026 8:45:31 AM com.objectstore.node.StorageNode handleRetrieve
+INFO: [RETRIEVE] OK  shard='myfile/shard-5'  bytes=129

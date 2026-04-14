@@ -23,7 +23,13 @@
             <version>${project.version}</version>
         </dependency>
 
-        <!-- JUnit 5 for Phase 2 unit tests -->
+        <!-- Backblaze Reed-Solomon erasure coding (Phase 3) -->
+        <dependency>
+            <groupId>com.backblaze.erasure</groupId>
+            <artifactId>JavaReedSolomon</artifactId>
+        </dependency>
+
+        <!-- JUnit 5 for unit tests -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>

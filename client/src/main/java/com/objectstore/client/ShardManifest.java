@@ -2,8 +2,15 @@ package com.objectstore.client;
 
 import com.objectstore.common.HashUtil;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -68,6 +75,24 @@ public class ShardManifest {
 
     /** Maps ShardKey → expected SHA-256 hex digest. */
     private final Map<ShardKey, String> hashMap = new HashMap<>();
+
+    // Phase 3 — Reed-Solomon coding parameters (set by ErasureClient at upload time)
+
+    /** Number of data shards (k). -1 if not yet configured. */
+    private int dataShards = -1;
+
+    /** Total shard count (n = data + parity). -1 if not yet configured. */
+    private int totalShards = -1;
+
+    /** Original file length in bytes, before zero-padding for RS alignment. */
+    private long originalFileLength = -1;
+
+    /**
+     * Ordered list of {@code "host:port"} strings, one per shard index.
+     * {@code nodeAddresses.get(i)} is the node that holds shard {@code i}.
+     * Populated by ErasureClient at upload time; used by the Auditor in Phase 4.
+     */
+    private final List<String> nodeAddresses = new ArrayList<>();
 
     // -----------------------------------------------------------------------
     // Constructor
@@ -155,6 +180,42 @@ public class ShardManifest {
     }
 
     // -----------------------------------------------------------------------
+    // Phase 3 — RS metadata setters (called once by ErasureClient at upload)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Records the Reed-Solomon coding parameters and original file length.
+     * Must be called exactly once, before the manifest is shared with the Auditor.
+     *
+     * @param dataShards         number of data shards (k)
+     * @param totalShards        total shards including parity (n)
+     * @param originalFileLength original file size in bytes (before RS zero-padding)
+     */
+    public void setRsMetadata(int dataShards, int totalShards, long originalFileLength) {
+        if (dataShards < 1 || totalShards <= dataShards) {
+            throw new IllegalArgumentException(
+                    "Invalid RS params: dataShards=" + dataShards + ", totalShards=" + totalShards);
+        }
+        if (originalFileLength < 0) {
+            throw new IllegalArgumentException("originalFileLength must be >= 0");
+        }
+        this.dataShards         = dataShards;
+        this.totalShards        = totalShards;
+        this.originalFileLength = originalFileLength;
+    }
+
+    /**
+     * Appends a node address for one shard (in shard-index order).
+     * Call this once per shard during the upload loop.
+     *
+     * @param hostPort {@code "host:port"} string for the node hosting this shard
+     */
+    public void addNodeAddress(String hostPort) {
+        Objects.requireNonNull(hostPort, "hostPort must not be null");
+        nodeAddresses.add(hostPort);
+    }
+
+    // -----------------------------------------------------------------------
     // Accessors
     // -----------------------------------------------------------------------
 
@@ -164,13 +225,139 @@ public class ShardManifest {
     /** Returns the number of shards registered in this manifest. */
     public int shardCount() { return hashMap.size(); }
 
+    /** Returns the number of data shards (k). Returns -1 if RS metadata not yet set. */
+    public int getDataShards() { return dataShards; }
+
+    /** Returns the total shard count (n). Returns -1 if RS metadata not yet set. */
+    public int getTotalShards() { return totalShards; }
+
+    /** Returns the original file length in bytes (before RS zero-padding). */
+    public long getOriginalFileLength() { return originalFileLength; }
+
+    /**
+     * Returns the {@code "host:port"} address of the node holding shard {@code index}.
+     *
+     * @param shardIndex zero-based shard index
+     * @return host:port string
+     * @throws IndexOutOfBoundsException if {@code shardIndex} is out of range
+     */
+    public String getNodeAddress(int shardIndex) {
+        return nodeAddresses.get(shardIndex);
+    }
+
+    /** Returns an unmodifiable view of all node addresses (in shard-index order). */
+    public List<String> getNodeAddresses() {
+        return Collections.unmodifiableList(nodeAddresses);
+    }
+
     /** Returns an unmodifiable snapshot of the internal hash map (useful for Auditor). */
     public Map<ShardKey, String> allEntries() {
         return Collections.unmodifiableMap(hashMap);
     }
 
+    // -----------------------------------------------------------------------
+    // Persistence — save / load (simple line-based text format)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Persists this manifest to a local file so it can be reloaded for
+     * {@code rs-download} without keeping the JVM alive.
+     *
+     * <p>Format (one key=value per line, {@code #} comment lines ignored):
+     * <pre>
+     * fileId=...
+     * dataShards=4
+     * totalShards=6
+     * originalFileLength=65536
+     * nodeAddress.0=localhost:7100
+     * ...
+     * hash.0=&lt;sha256hex&gt;
+     * ...
+     * </pre>
+     *
+     * @param path file path to write to (parent directories must exist)
+     * @throws IOException on write error
+     */
+    public void save(Path path) throws IOException {
+        Files.createDirectories(path.getParent() == null
+                ? path.toAbsolutePath().getParent() : path.getParent());
+        try (PrintWriter pw = new PrintWriter(Files.newBufferedWriter(path))) {
+            pw.println("# ShardManifest — auto-generated by the distributed object store client");
+            pw.printf("fileId=%s%n", fileId);
+            pw.printf("dataShards=%d%n", dataShards);
+            pw.printf("totalShards=%d%n", totalShards);
+            pw.printf("originalFileLength=%d%n", originalFileLength);
+            for (int i = 0; i < nodeAddresses.size(); i++) {
+                pw.printf("nodeAddress.%d=%s%n", i, nodeAddresses.get(i));
+            }
+            for (int i = 0; i < totalShards; i++) {
+                ShardKey key = new ShardKey(fileId, i);
+                String hash = hashMap.get(key);
+                if (hash != null) {
+                    pw.printf("hash.%d=%s%n", i, hash);
+                }
+            }
+        }
+    }
+
+    /**
+     * Loads a {@link ShardManifest} previously written by {@link #save(Path)}.
+     *
+     * @param path path to the manifest file
+     * @return the loaded manifest
+     * @throws IOException              on read error
+     * @throws IllegalArgumentException if the file is malformed
+     */
+    public static ShardManifest load(Path path) throws IOException {
+        try (BufferedReader br = Files.newBufferedReader(path)) {
+            String fileId = null;
+            int dataShards = -1, totalShards = -1;
+            long originalFileLength = -1;
+            List<String> nodeAddresses = new ArrayList<>();
+            Map<Integer, String> hashes = new HashMap<>();
+
+            String line;
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                int eq = line.indexOf('=');
+                if (eq < 0) continue;
+                String key = line.substring(0, eq).trim();
+                String val = line.substring(eq + 1).trim();
+
+                switch (key) {
+                    case "fileId"             -> fileId = val;
+                    case "dataShards"         -> dataShards = Integer.parseInt(val);
+                    case "totalShards"        -> totalShards = Integer.parseInt(val);
+                    case "originalFileLength" -> originalFileLength = Long.parseLong(val);
+                    default -> {
+                        if (key.startsWith("nodeAddress.")) {
+                            nodeAddresses.add(val);
+                        } else if (key.startsWith("hash.")) {
+                            int idx = Integer.parseInt(key.substring("hash.".length()));
+                            hashes.put(idx, val);
+                        }
+                    }
+                }
+            }
+
+            if (fileId == null) throw new IllegalArgumentException("Manifest missing 'fileId'");
+            ShardManifest m = new ShardManifest(fileId);
+            m.setRsMetadata(dataShards, totalShards, originalFileLength);
+            for (String addr : nodeAddresses) m.addNodeAddress(addr);
+            for (Map.Entry<Integer, String> e : hashes.entrySet()) {
+                // Register a placeholder so the hashMap contains the key,
+                // then overwrite the hash directly.
+                m.hashMap.put(new ShardKey(fileId, e.getKey()), e.getValue());
+            }
+            return m;
+        }
+    }
+
     @Override
     public String toString() {
-        return "ShardManifest{fileId='" + fileId + "', shards=" + hashMap.size() + "}";
+        return "ShardManifest{fileId='" + fileId + "', shards=" + hashMap.size()
+                + ", dataShards=" + dataShards + ", totalShards=" + totalShards
+                + ", originalLength=" + originalFileLength + "}";
     }
 }

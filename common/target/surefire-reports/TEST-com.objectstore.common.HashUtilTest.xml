@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="com.objectstore.common.HashUtilTest" time="0.025" tests="8" errors="0" skipped="0" failures="0">
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="com.objectstore.common.HashUtilTest" time="0.024" tests="8" errors="0" skipped="0" failures="0">
   <properties>
     <property name="java.specification.version" value="17"/>
     <property name="sun.jnu.encoding" value="UTF-8"/>
@@ -12,7 +12,8 @@
     <property name="sun.java.launcher" value="SUN_STANDARD"/>
     <property name="user.country" value="US"/>
     <property name="sun.boot.library.path" value="/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home/lib"/>
-    <property name="sun.java.command" value="/Users/sanjithjayasankar/Documents/gitrepo/Self-Healing-Distributed-Object-Store/common/target/surefire/surefirebooter-20260411213253684_3.jar /Users/sanjithjayasankar/Documents/gitrepo/Self-Healing-Distributed-Object-Store/common/target/surefire 2026-04-11T21-32-53_659-jvmRun1 surefire-20260411213253684_1tmp surefire_0-20260411213253684_2tmp"/>
+    <property name="sun.java.command" value="/Users/sanjithjayasankar/Documents/gitrepo/Self-Healing-Distributed-Object-Store/common/target/surefire/surefirebooter-20260414084454705_3.jar /Users/sanjithjayasankar/Documents/gitrepo/Self-Healing-Distributed-Object-Store/common/target/surefire 2026-04-14T08-44-54_677-jvmRun1 surefire-20260414084454705_1tmp surefire_0-20260414084454705_2tmp"/>
+    <property name="http.nonProxyHosts" value="local|*.local|169.254/16|*.169.254/16"/>
     <property name="jdk.debug" value="release"/>
     <property name="surefire.test.class.path" value="/Users/sanjithjayasankar/Documents/gitrepo/Self-Healing-Distributed-Object-Store/common/target/test-classes:/Users/sanjithjayasankar/Documents/gitrepo/Self-Healing-Distributed-Object-Store/common/target/classes:/Users/sanjithjayasankar/.m2/repository/org/junit/jupiter/junit-jupiter/5.10.2/junit-jupiter-5.10.2.jar:/Users/sanjithjayasankar/.m2/repository/org/junit/jupiter/junit-jupiter-api/5.10.2/junit-jupiter-api-5.10.2.jar:/Users/sanjithjayasankar/.m2/repository/org/opentest4j/opentest4j/1.3.0/opentest4j-1.3.0.jar:/Users/sanjithjayasankar/.m2/repository/org/junit/platform/junit-platform-commons/1.10.2/junit-platform-commons-1.10.2.jar:/Users/sanjithjayasankar/.m2/repository/org/apiguardian/apiguardian-api/1.1.2/apiguardian-api-1.1.2.jar:/Users/sanjithjayasankar/.m2/repository/org/junit/jupiter/junit-jupiter-params/5.10.2/junit-jupiter-params-5.10.2.jar:/Users/sanjithjayasankar/.m2/repository/org/junit/jupiter/junit-jupiter-engine/5.10.2/junit-jupiter-engine-5.10.2.jar:/Users/sanjithjayasankar/.m2/repository/org/junit/platform/junit-platform-engine/1.10.2/junit-platform-engine-1.10.2.jar:"/>
     <property name="sun.cpu.endian" value="little"/>
@@ -27,8 +28,9 @@
     <property name="line.separator" value="&#10;"/>
     <property name="java.specification.name" value="Java Platform API Specification"/>
     <property name="java.vm.specification.vendor" value="Oracle Corporation"/>
-    <property name="surefire.real.class.path" value="/Users/sanjithjayasankar/Documents/gitrepo/Self-Healing-Distributed-Object-Store/common/target/surefire/surefirebooter-20260411213253684_3.jar"/>
+    <property name="surefire.real.class.path" value="/Users/sanjithjayasankar/Documents/gitrepo/Self-Healing-Distributed-Object-Store/common/target/surefire/surefirebooter-20260414084454705_3.jar"/>
     <property name="sun.management.compiler" value="HotSpot 64-Bit Tiered Compilers"/>
+    <property name="ftp.nonProxyHosts" value="local|*.local|169.254/16|*.169.254/16"/>
     <property name="java.runtime.version" value="17.0.18+8"/>
     <property name="user.name" value="sanjithjayasankar"/>
     <property name="path.separator" value=":"/>
@@ -51,14 +53,15 @@
     <property name="java.vm.version" value="17.0.18+8"/>
     <property name="java.specification.maintenance.version" value="1"/>
     <property name="sun.io.unicode.encoding" value="UnicodeBig"/>
+    <property name="socksNonProxyHosts" value="local|*.local|169.254/16|*.169.254/16"/>
     <property name="java.class.version" value="61.0"/>
   </properties>
-  <testcase name="sha256Hex_isLowerCase" classname="com.objectstore.common.HashUtilTest" time="0.013"/>
+  <testcase name="sha256Hex_isLowerCase" classname="com.objectstore.common.HashUtilTest" time="0.011"/>
   <testcase name="bytesToHex_zeroBytes_returnsCorrectHex" classname="com.objectstore.common.HashUtilTest" time="0.0"/>
   <testcase name="sha256Hex_isDeterministic" classname="com.objectstore.common.HashUtilTest" time="0.001"/>
-  <testcase name="sha256Hex_knownVector_returnsCorrectHex" classname="com.objectstore.common.HashUtilTest" time="0.0"/>
-  <testcase name="sha256_differentInputs_produceDifferentHashes" classname="com.objectstore.common.HashUtilTest" time="0.0"/>
+  <testcase name="sha256Hex_knownVector_returnsCorrectHex" classname="com.objectstore.common.HashUtilTest" time="0.001"/>
+  <testcase name="sha256_differentInputs_produceDifferentHashes" classname="com.objectstore.common.HashUtilTest" time="0.001"/>
   <testcase name="sha256Hex_returns64Characters" classname="com.objectstore.common.HashUtilTest" time="0.0"/>
-  <testcase name="bytesToHex_emptyArray_returnsEmptyString" classname="com.objectstore.common.HashUtilTest" time="0.001"/>
+  <testcase name="bytesToHex_emptyArray_returnsEmptyString" classname="com.objectstore.common.HashUtilTest" time="0.0"/>
   <testcase name="sha256_sameInput_producesSameHash" classname="com.objectstore.common.HashUtilTest" time="0.001"/>
 </testsuite>
