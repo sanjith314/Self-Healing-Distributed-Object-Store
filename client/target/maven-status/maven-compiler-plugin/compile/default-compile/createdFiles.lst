@@ -1,9 +1,0 @@
-com/objectstore/client/NodeConnection.class
-com/objectstore/client/ErasureClient.class
-com/objectstore/client/Client.class
-com/objectstore/client/ReedSolomonHelper$InsufficientShardsException.class
-com/objectstore/client/NodeConnection$StorageException.class
-com/objectstore/client/ShardManifest$ShardKey.class
-com/objectstore/client/ShardManifest.class
-com/objectstore/client/ReedSolomonHelper.class
-com/objectstore/client/ErasureClient$NodeAddress.class

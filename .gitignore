@@ -1,0 +1,22 @@
+# ── Maven build output ────────────────────────────────────────────────────────
+target/
+
+# ── Runtime cluster data (logs + shards written during a run) ─────────────────
+cluster-data/
+
+# ── PoR run outputs (generated fresh on every upload) ─────────────────────────
+*.manifest
+*.porkey
+
+# ── Downloaded / recovered output files ───────────────────────────────────────
+recovered*.txt
+recovered*.bin
+*.recovered
+
+# ── Temporary / scratch node data directories ─────────────────────────────────
+tmp-*/
+demo-node-data/
+data/
+
+# ── macOS noise ───────────────────────────────────────────────────────────────
+.DS_Store
