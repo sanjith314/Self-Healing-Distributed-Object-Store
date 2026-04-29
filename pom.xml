@@ -12,8 +12,8 @@
 
     <name>Distributed Object Store — Parent</name>
     <description>
-        Fault-tolerant distributed object storage with Reed-Solomon erasure coding
-        and SHA-256 integrity verification.
+        Fault-tolerant distributed object storage with manual GF(2³) Vandermonde
+        erasure coding and Shacham-Waters Proof of Retrievability (PoR) integrity verification.
     </description>
 
     <modules>
@@ -41,12 +41,6 @@
                 <scope>import</scope>
             </dependency>
 
-            <!-- Backblaze Reed-Solomon erasure coding library (Phase 3) -->
-            <dependency>
-                <groupId>com.backblaze.erasure</groupId>
-                <artifactId>JavaReedSolomon</artifactId>
-                <version>1.0.3</version>
-            </dependency>
         </dependencies>
     </dependencyManagement>
 

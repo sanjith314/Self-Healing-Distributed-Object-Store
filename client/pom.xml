@@ -23,10 +23,13 @@
             <version>${project.version}</version>
         </dependency>
 
-        <!-- Backblaze Reed-Solomon erasure coding (Phase 3) -->
+
+        <!-- storage-node pulled in for integration tests that spin up an embedded node -->
         <dependency>
-            <groupId>com.backblaze.erasure</groupId>
-            <artifactId>JavaReedSolomon</artifactId>
+            <groupId>com.objectstore</groupId>
+            <artifactId>storage-node</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
         </dependency>
 
         <!-- JUnit 5 for unit tests -->

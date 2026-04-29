@@ -15,31 +15,24 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Client-held manifest that records the expected SHA-256 hash for every shard
+ * Client-held manifest that records integrity metadata for every block fragment
  * belonging to a stored file.
  *
  * <h2>Trust model</h2>
  * <p>The manifest is <em>client-owned</em>. It is computed locally before
  * any data is sent to the untrusted storage nodes and is never stored on those
- * nodes. This is the critical design property described in {@code CLAUDE.md}:
- * the nodes cannot forge or modify the ground-truth integrity metadata because
- * they simply do not hold it.
+ * nodes. From Phase 3B onward it holds the PoR secret key and per-block tags
+ * rather than SHA-256 hashes.
  *
  * <h2>Shard addressing</h2>
- * <p>Each shard is identified by a {@code (fileId, shardIndex)} pair where:
- * <ul>
- *   <li>{@code fileId} — a unique identifier for the logical file
- *       (e.g. a UUID or a human-readable name)</li>
- *   <li>{@code shardIndex} — zero-based index of the shard within the file</li>
- * </ul>
+ * <p>Each fragment is identified by a {@code (fileId, shardIndex)} pair.
  * The manifest translates these to a wire-level {@code shardId} string of the
  * form {@code "<fileId>/shard-<index>"} which maps naturally to a directory
  * hierarchy on the storage node's filesystem.
  *
  * <h2>Thread safety</h2>
  * <p>Instances are <em>not</em> thread-safe once published. They are intended
- * to be fully populated before sharing with the Auditor. In Phase 2 all access
- * is single-threaded.
+ * to be fully populated before sharing with the Auditor.
  */
 public class ShardManifest {
 
@@ -70,29 +63,42 @@ public class ShardManifest {
     // State
     // -----------------------------------------------------------------------
 
-    /** fileId that every shard in this manifest belongs to. */
+    /** fileId that every fragment in this manifest belongs to. */
     private final String fileId;
 
-    /** Maps ShardKey → expected SHA-256 hex digest. */
+    /** Maps ShardKey → expected SHA-256 hex digest (kept for Phase 2 compat). */
     private final Map<ShardKey, String> hashMap = new HashMap<>();
 
-    // Phase 3 — Reed-Solomon coding parameters (set by ErasureClient at upload time)
+    // Phase 3B — PoR secret key and per-block tags
 
-    /** Number of data shards (k). -1 if not yet configured. */
+    /** PoR secret key (k_prf, alpha, u[]). Never sent to nodes. Null until upload. */
+    private PorSecretKey secretKey;
+
+    /** Per-block PRF tags. tags.get(i) holds sigma_i for block i. */
+    private final List<PorTag> tags = new ArrayList<>();
+
+    // Erasure coding parameters (set by ErasureClient at upload time)
+
+    /** Number of data fragments (k). -1 if not yet configured. */
     private int dataShards = -1;
 
-    /** Total shard count (n = data + parity). -1 if not yet configured. */
+    /** Total fragment count (n = data + parity). -1 if not yet configured. */
     private int totalShards = -1;
 
-    /** Original file length in bytes, before zero-padding for RS alignment. */
+    /** Original file length in bytes, before zero-padding for codec alignment. */
     private long originalFileLength = -1;
 
+    /** Fragment size in bytes (set via {@link #setCodingMetadata}). -1 if not set. */
+    private int fragmentSize = -1;
+
     /**
-     * Ordered list of {@code "host:port"} strings, one per shard index.
-     * {@code nodeAddresses.get(i)} is the node that holds shard {@code i}.
-     * Populated by ErasureClient at upload time; used by the Auditor in Phase 4.
+     * Ordered list of {@code "host:port"} strings, one per fragment index.
+     * {@code nodeAddresses.get(i)} is the node that holds fragment {@code i}.
      */
     private final List<String> nodeAddresses = new ArrayList<>();
+
+    /** Optional FingerprintedCrossChecksum (used by older Phase 3B integrity path). */
+    private FingerprintedCrossChecksum fingerprintCrossChecksum;
 
     // -----------------------------------------------------------------------
     // Constructor
@@ -180,21 +186,67 @@ public class ShardManifest {
     }
 
     // -----------------------------------------------------------------------
-    // Phase 3 — RS metadata setters (called once by ErasureClient at upload)
+    // PoR tag API (Phase 3B)
     // -----------------------------------------------------------------------
 
     /**
-     * Records the Reed-Solomon coding parameters and original file length.
+     * Stores the PoR secret key generated at upload time.
+     *
+     * @param sk the client's secret key (must not be null)
+     */
+    public void setSecretKey(PorSecretKey sk) {
+        this.secretKey = Objects.requireNonNull(sk, "secretKey must not be null");
+    }
+
+    /** Returns the stored PoR secret key, or {@code null} if not yet set. */
+    public PorSecretKey getSecretKey() { return secretKey; }
+
+    /**
+     * Records the PRF tag for one block fragment.
+     *
+     * @param blockIndex 0-based block index
+     * @param sigma      computed tag value in Z_p
+     */
+    public void registerTag(int blockIndex, long sigma) {
+        tags.add(new PorTag(blockIndex, sigma));
+    }
+
+    /**
+     * Returns the tag for the given block index.
+     *
+     * @param blockIndex 0-based block index
+     * @return the corresponding {@link PorTag}
+     * @throws IllegalArgumentException if no tag is registered for this index
+     */
+    public PorTag getTag(int blockIndex) {
+        return tags.stream()
+                .filter(t -> t.blockIndex() == blockIndex)
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No PoR tag for block " + blockIndex));
+    }
+
+    /** Returns an unmodifiable view of all PoR tags (in registration order). */
+    public List<PorTag> allTags() {
+        return Collections.unmodifiableList(tags);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3 — erasure coding metadata setters
+    // -----------------------------------------------------------------------
+
+    /**
+     * Records the erasure coding parameters and original file length.
      * Must be called exactly once, before the manifest is shared with the Auditor.
      *
-     * @param dataShards         number of data shards (k)
-     * @param totalShards        total shards including parity (n)
-     * @param originalFileLength original file size in bytes (before RS zero-padding)
+     * @param dataShards         number of data fragments (k)
+     * @param totalShards        total fragments including parity (n)
+     * @param originalFileLength original file size in bytes (before codec zero-padding)
      */
     public void setRsMetadata(int dataShards, int totalShards, long originalFileLength) {
         if (dataShards < 1 || totalShards <= dataShards) {
             throw new IllegalArgumentException(
-                    "Invalid RS params: dataShards=" + dataShards + ", totalShards=" + totalShards);
+                    "Invalid codec params: dataShards=" + dataShards + ", totalShards=" + totalShards);
         }
         if (originalFileLength < 0) {
             throw new IllegalArgumentException("originalFileLength must be >= 0");
@@ -205,10 +257,57 @@ public class ShardManifest {
     }
 
     /**
-     * Appends a node address for one shard (in shard-index order).
-     * Call this once per shard during the upload loop.
+     * Alternative to {@link #setRsMetadata} that also records the per-fragment byte size.
+     * Used by the {@code FingerprintedCrossChecksum} integrity path.
      *
-     * @param hostPort {@code "host:port"} string for the node hosting this shard
+     * @param sourceFragments    number of data/source fragments (k)
+     * @param totalFragments     total fragments including parity (n)
+     * @param originalFileLength original file size in bytes
+     * @param fragmentSize       size of each fragment in bytes
+     */
+    public void setCodingMetadata(int sourceFragments, int totalFragments,
+                                  long originalFileLength, int fragmentSize) {
+        setRsMetadata(sourceFragments, totalFragments, originalFileLength);
+        this.fragmentSize = fragmentSize;
+    }
+
+    /**
+     * Stores a {@link FingerprintedCrossChecksum} for this file.
+     * Used by the homomorphic-fingerprint integrity path.
+     *
+     * @param fpcc the fingerprinted cross-checksum (must not be null)
+     */
+    public void setFingerprintCrossChecksum(FingerprintedCrossChecksum fpcc) {
+        this.fingerprintCrossChecksum = Objects.requireNonNull(fpcc, "fpcc must not be null");
+    }
+
+    /** Returns the stored {@link FingerprintedCrossChecksum}, or {@code null} if not set. */
+    public FingerprintedCrossChecksum getFingerprintCrossChecksum() {
+        return fingerprintCrossChecksum;
+    }
+
+    /**
+     * Verifies a fragment byte array against the stored {@link FingerprintedCrossChecksum}.
+     *
+     * @param fragmentIndex zero-based fragment index
+     * @param fragmentBytes raw bytes of the candidate fragment
+     * @param codec         the erasure codec used during encoding
+     * @return {@code true} if the fragment passes both the hash and fingerprint checks
+     * @throws IllegalStateException if no {@link FingerprintedCrossChecksum} has been set
+     */
+    public boolean verifyFragment(int fragmentIndex, byte[] fragmentBytes, LinearErasureCodec codec) {
+        if (fingerprintCrossChecksum == null) {
+            throw new IllegalStateException(
+                    "No FingerprintedCrossChecksum set — call setFingerprintCrossChecksum() first");
+        }
+        return fingerprintCrossChecksum.verifyFragment(fragmentIndex, fragmentBytes, codec);
+    }
+
+    /**
+     * Appends a node address for one fragment (in fragment-index order).
+     * Call this once per fragment during the upload loop.
+     *
+     * @param hostPort {@code "host:port"} string for the node hosting this fragment
      */
     public void addNodeAddress(String hostPort) {
         Objects.requireNonNull(hostPort, "hostPort must not be null");
@@ -222,22 +321,31 @@ public class ShardManifest {
     /** Returns the file identifier this manifest belongs to. */
     public String getFileId() { return fileId; }
 
-    /** Returns the number of shards registered in this manifest. */
-    public int shardCount() { return hashMap.size(); }
+    /** Returns the number of fragments registered in this manifest. */
+    public int shardCount() { return Math.max(hashMap.size(), tags.size()); }
 
-    /** Returns the number of data shards (k). Returns -1 if RS metadata not yet set. */
+    /** Returns the number of data fragments (k). Returns -1 if codec metadata not yet set. */
     public int getDataShards() { return dataShards; }
 
-    /** Returns the total shard count (n). Returns -1 if RS metadata not yet set. */
+    /** Alias for {@link #getDataShards()} — number of source/data fragments (k). */
+    public int getSourceFragments() { return dataShards; }
+
+    /** Returns the total fragment count (n). Returns -1 if codec metadata not yet set. */
     public int getTotalShards() { return totalShards; }
 
-    /** Returns the original file length in bytes (before RS zero-padding). */
+    /** Alias for {@link #getTotalShards()} — total fragment count (n). */
+    public int getTotalFragments() { return totalShards; }
+
+    /** Returns the per-fragment byte size, or -1 if not set via {@link #setCodingMetadata}. */
+    public int getFragmentSize() { return fragmentSize; }
+
+    /** Returns the original file length in bytes (before codec zero-padding). */
     public long getOriginalFileLength() { return originalFileLength; }
 
     /**
-     * Returns the {@code "host:port"} address of the node holding shard {@code index}.
+     * Returns the {@code "host:port"} address of the node holding fragment {@code index}.
      *
-     * @param shardIndex zero-based shard index
+     * @param shardIndex zero-based fragment index
      * @return host:port string
      * @throws IndexOutOfBoundsException if {@code shardIndex} is out of range
      */
@@ -245,12 +353,12 @@ public class ShardManifest {
         return nodeAddresses.get(shardIndex);
     }
 
-    /** Returns an unmodifiable view of all node addresses (in shard-index order). */
+    /** Returns an unmodifiable view of all node addresses (in fragment-index order). */
     public List<String> getNodeAddresses() {
         return Collections.unmodifiableList(nodeAddresses);
     }
 
-    /** Returns an unmodifiable snapshot of the internal hash map (useful for Auditor). */
+    /** Returns an unmodifiable snapshot of the internal hash map (for backward compat). */
     public Map<ShardKey, String> allEntries() {
         return Collections.unmodifiableMap(hashMap);
     }
@@ -260,8 +368,7 @@ public class ShardManifest {
     // -----------------------------------------------------------------------
 
     /**
-     * Persists this manifest to a local file so it can be reloaded for
-     * {@code rs-download} without keeping the JVM alive.
+     * Persists this manifest to a local file.
      *
      * <p>Format (one key=value per line, {@code #} comment lines ignored):
      * <pre>
@@ -271,30 +378,46 @@ public class ShardManifest {
      * originalFileLength=65536
      * nodeAddress.0=localhost:7100
      * ...
-     * hash.0=&lt;sha256hex&gt;
+     * tag.0=&lt;sigma_0 decimal&gt;
      * ...
+     * # porkey file is written separately as &lt;fileId&gt;.porkey
      * </pre>
      *
-     * @param path file path to write to (parent directories must exist)
+     * @param path file path to write to (parent directories will be created)
      * @throws IOException on write error
      */
     public void save(Path path) throws IOException {
         Files.createDirectories(path.getParent() == null
                 ? path.toAbsolutePath().getParent() : path.getParent());
         try (PrintWriter pw = new PrintWriter(Files.newBufferedWriter(path))) {
-            pw.println("# ShardManifest — auto-generated by the distributed object store client");
+            pw.println("# ShardManifest (Phase 3B PoR) — auto-generated");
             pw.printf("fileId=%s%n", fileId);
             pw.printf("dataShards=%d%n", dataShards);
             pw.printf("totalShards=%d%n", totalShards);
             pw.printf("originalFileLength=%d%n", originalFileLength);
+            if (fragmentSize >= 0) pw.printf("fragmentSize=%d%n", fragmentSize);
             for (int i = 0; i < nodeAddresses.size(); i++) {
                 pw.printf("nodeAddress.%d=%s%n", i, nodeAddresses.get(i));
             }
+            // SHA-256 hashes (Phase 2 compat — may be empty)
             for (int i = 0; i < totalShards; i++) {
                 ShardKey key = new ShardKey(fileId, i);
                 String hash = hashMap.get(key);
-                if (hash != null) {
-                    pw.printf("hash.%d=%s%n", i, hash);
+                if (hash != null) pw.printf("hash.%d=%s%n", i, hash);
+            }
+            // PoR tags (Phase 3B)
+            for (PorTag tag : tags) {
+                pw.printf("tag.%d=%d%n", tag.blockIndex(), tag.sigma());
+            }
+            // FingerprintedCrossChecksum (optional, homomorphic path)
+            if (fingerprintCrossChecksum != null) {
+                pw.printf("fpcc.fingerprintBytes=%d%n", fingerprintCrossChecksum.fingerprintBytes());
+                pw.printf("fpcc.seed=%s%n", HashUtil.bytesToHex(fingerprintCrossChecksum.seed()));
+                String[] cc = fingerprintCrossChecksum.crossChecksum();
+                for (int i = 0; i < cc.length; i++) pw.printf("fpcc.cc.%d=%s%n", i, cc[i]);
+                byte[][] sfp = fingerprintCrossChecksum.sourceFingerprints();
+                for (int i = 0; i < sfp.length; i++) {
+                    pw.printf("fpcc.sfp.%d=%s%n", i, HashUtil.bytesToHex(sfp[i]));
                 }
             }
         }
@@ -311,10 +434,16 @@ public class ShardManifest {
     public static ShardManifest load(Path path) throws IOException {
         try (BufferedReader br = Files.newBufferedReader(path)) {
             String fileId = null;
-            int dataShards = -1, totalShards = -1;
+            int dataShards = -1, totalShards = -1, fragSize = -1;
             long originalFileLength = -1;
             List<String> nodeAddresses = new ArrayList<>();
             Map<Integer, String> hashes = new HashMap<>();
+            Map<Integer, Long> porTags = new HashMap<>();
+            // FPCC fields
+            int fpccFingerprintBytes = -1;
+            byte[] fpccSeed = null;
+            Map<Integer, String> fpccCc = new HashMap<>();
+            Map<Integer, byte[]> fpccSfp = new HashMap<>();
 
             String line;
             while ((line = br.readLine()) != null) {
@@ -326,16 +455,28 @@ public class ShardManifest {
                 String val = line.substring(eq + 1).trim();
 
                 switch (key) {
-                    case "fileId"             -> fileId = val;
-                    case "dataShards"         -> dataShards = Integer.parseInt(val);
-                    case "totalShards"        -> totalShards = Integer.parseInt(val);
-                    case "originalFileLength" -> originalFileLength = Long.parseLong(val);
+                    case "fileId"              -> fileId = val;
+                    case "dataShards"          -> dataShards = Integer.parseInt(val);
+                    case "totalShards"         -> totalShards = Integer.parseInt(val);
+                    case "originalFileLength"  -> originalFileLength = Long.parseLong(val);
+                    case "fragmentSize"        -> fragSize = Integer.parseInt(val);
+                    case "fpcc.fingerprintBytes" -> fpccFingerprintBytes = Integer.parseInt(val);
+                    case "fpcc.seed"           -> fpccSeed = hexToBytes(val);
                     default -> {
                         if (key.startsWith("nodeAddress.")) {
                             nodeAddresses.add(val);
                         } else if (key.startsWith("hash.")) {
                             int idx = Integer.parseInt(key.substring("hash.".length()));
                             hashes.put(idx, val);
+                        } else if (key.startsWith("tag.")) {
+                            int idx = Integer.parseInt(key.substring("tag.".length()));
+                            porTags.put(idx, Long.parseLong(val));
+                        } else if (key.startsWith("fpcc.cc.")) {
+                            int idx = Integer.parseInt(key.substring("fpcc.cc.".length()));
+                            fpccCc.put(idx, val);
+                        } else if (key.startsWith("fpcc.sfp.")) {
+                            int idx = Integer.parseInt(key.substring("fpcc.sfp.".length()));
+                            fpccSfp.put(idx, hexToBytes(val));
                         }
                     }
                 }
@@ -344,11 +485,25 @@ public class ShardManifest {
             if (fileId == null) throw new IllegalArgumentException("Manifest missing 'fileId'");
             ShardManifest m = new ShardManifest(fileId);
             m.setRsMetadata(dataShards, totalShards, originalFileLength);
+            if (fragSize >= 0) m.fragmentSize = fragSize;
             for (String addr : nodeAddresses) m.addNodeAddress(addr);
             for (Map.Entry<Integer, String> e : hashes.entrySet()) {
-                // Register a placeholder so the hashMap contains the key,
-                // then overwrite the hash directly.
                 m.hashMap.put(new ShardKey(fileId, e.getKey()), e.getValue());
+            }
+            for (Map.Entry<Integer, Long> e : porTags.entrySet()) {
+                m.registerTag(e.getKey(), e.getValue());
+            }
+            // Reconstruct FPCC if all required fields are present
+            if (fpccSeed != null && fpccFingerprintBytes > 0
+                    && !fpccCc.isEmpty() && !fpccSfp.isEmpty()) {
+                int n = fpccCc.size();
+                int s = fpccSfp.size();
+                String[] cc  = new String[n];
+                for (Map.Entry<Integer, String> e : fpccCc.entrySet())  cc[e.getKey()]  = e.getValue();
+                byte[][] sfp = new byte[s][];
+                for (Map.Entry<Integer, byte[]> e : fpccSfp.entrySet()) sfp[e.getKey()] = e.getValue();
+                m.fingerprintCrossChecksum =
+                        new FingerprintedCrossChecksum(cc, sfp, fpccSeed, fpccFingerprintBytes);
             }
             return m;
         }
@@ -356,8 +511,24 @@ public class ShardManifest {
 
     @Override
     public String toString() {
-        return "ShardManifest{fileId='" + fileId + "', shards=" + hashMap.size()
+        return "ShardManifest{fileId='" + fileId + "', fragments=" + shardCount()
                 + ", dataShards=" + dataShards + ", totalShards=" + totalShards
-                + ", originalLength=" + originalFileLength + "}";
+                + ", originalLength=" + originalFileLength
+                + ", tags=" + tags.size()
+                + ", hasKey=" + (secretKey != null) + "}";
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------------
+
+    /** Decodes a lowercase hex string produced by {@link HashUtil#bytesToHex} back to bytes. */
+    private static byte[] hexToBytes(String hex) {
+        int len = hex.length();
+        byte[] out = new byte[len / 2];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = (byte) Integer.parseInt(hex.substring(2 * i, 2 * i + 2), 16);
+        }
+        return out;
     }
 }

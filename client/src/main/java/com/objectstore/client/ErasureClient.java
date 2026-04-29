@@ -19,22 +19,23 @@ import java.util.logging.Logger;
  *
  * <h2>Upload</h2>
  * <ol>
- *   <li>Read the file bytes and run Reed-Solomon encoding to produce
- *       {@code dataShards + parityShards} equal-size chunks.</li>
- *   <li>SHA-256 fingerprint every chunk and register it in the
- *       {@link ShardManifest}.</li>
- *   <li>Fan out all {@code n} STORE commands in parallel, one per node.</li>
+ *   <li>Read the file bytes and run {@link LinearErasureCodec} encoding to produce
+ *       {@code dataShards + parityShards} equal-size fragments.</li>
+ *   <li>Generate a {@link PorSecretKey} and compute a PRF tag
+ *       {@code σᵢ = f_k(i) + Σⱼ m_{i,j}·u_j (mod p)} for every fragment.</li>
+ *   <li>Register node addresses and tags in the {@link ShardManifest}.</li>
+ *   <li>Fan out all {@code n} STORE commands in parallel, one per node,
+ *       appending the 8-byte sigma to each STORE payload.</li>
  *   <li>Return the fully-populated manifest to the caller (kept client-side).</li>
  * </ol>
  *
  * <h2>Download</h2>
  * <ol>
  *   <li>Fan out all {@code n} RETRIEVE commands in parallel.</li>
- *   <li>Verify each response against the manifest; treat hash mismatches and
- *       node failures (IOException) as <em>erasures</em> — {@code present[i] = false}.</li>
- *   <li>Abort with {@link ReedSolomonHelper.InsufficientShardsException} if fewer
- *       than {@code k} shards are healthy.</li>
- *   <li>Pass shards + erasure mask to Reed-Solomon reconstruction.</li>
+ *   <li>Treat node failures (IOException) as <em>erasures</em> — {@code present[i] = false}.</li>
+ *   <li>Abort with {@link LinearErasureCodec.InsufficientFragmentsException} if fewer
+ *       than {@code k} fragments are healthy.</li>
+ *   <li>Pass fragments + erasure mask to {@link LinearErasureCodec#decode}.</li>
  *   <li>Strip zero-padding using the manifest's recorded original file length.</li>
  *   <li>Write the reconstructed bytes to the output path and return it.</li>
  * </ol>
@@ -49,10 +50,10 @@ public class ErasureClient {
 
     private static final Logger LOG = Logger.getLogger(ErasureClient.class.getName());
 
-    /** Thread pool for parallel node I/O — one thread per shard in the worst case. */
+    /** Thread pool for parallel node I/O — one thread per fragment in the worst case. */
     private final ExecutorService executor;
 
-    /** Default RS parameters — (6, 4): 4 data + 2 parity shards. */
+    /** Erasure coding parameters — (6, 4): 4 data + 2 parity fragments. */
     private final int dataShards;
     private final int parityShards;
 
@@ -60,9 +61,9 @@ public class ErasureClient {
     // Constructors
     // -----------------------------------------------------------------------
 
-    /** Creates an ErasureClient with the default (6, 4) RS parameters. */
+    /** Creates an ErasureClient with the default (6, 4) erasure coding parameters. */
     public ErasureClient() {
-        this(ReedSolomonHelper.DATA_SHARDS, ReedSolomonHelper.PARITY_SHARDS);
+        this(LinearErasureCodec.SOURCE_FRAGMENTS, LinearErasureCodec.PARITY_FRAGMENTS);
     }
 
     /**
@@ -86,15 +87,15 @@ public class ErasureClient {
     // -----------------------------------------------------------------------
 
     /**
-     * Encodes {@code filePath} with Reed-Solomon and distributes all shards
+     * Encodes {@code filePath} with {@link LinearErasureCodec} and distributes all fragments
      * across the given nodes in parallel.
      *
-     * <p>Exactly one shard is sent to each node: shard {@code i} → {@code nodes.get(i)}.
+     * <p>Exactly one fragment is sent to each node: fragment {@code i} → {@code nodes.get(i)}.
      * The number of nodes must equal {@code dataShards + parityShards}.
      *
      * @param filePath     source file to encode and distribute
      * @param fileId       logical file identifier (used as shard-ID prefix in the manifest)
-     * @param nodes        ordered list of node addresses (one per shard)
+     * @param nodes        ordered list of node addresses (one per fragment)
      * @return the populated {@link ShardManifest} (caller must keep this client-side)
      * @throws IOException                  if the file cannot be read or any node STORE fails
      * @throws IllegalArgumentException     if {@code nodes.size() != dataShards + parityShards}
@@ -110,11 +111,11 @@ public class ErasureClient {
 
         System.out.println();
         System.out.println("=".repeat(60));
-        System.out.println(" Phase 3 — RS Upload");
+        System.out.println(" Phase 3B — POR Upload");
         System.out.println("=".repeat(60));
         System.out.printf("  File        : %s%n", filePath.toAbsolutePath());
         System.out.printf("  File ID     : %s%n", fileId);
-        System.out.printf("  RS params   : (%d data + %d parity = %d total shards)%n",
+        System.out.printf("  Codec params: (%d data + %d parity = %d total fragments)%n",
                 dataShards, parityShards, totalShards);
 
         // ---- 1. Read file & encode ------------------------------------------
@@ -122,40 +123,47 @@ public class ErasureClient {
         long   originalLength = data.length;
         System.out.printf("%n[1/3] Read %d bytes from disk.%n", originalLength);
 
-        byte[][] shards = ReedSolomonHelper.encode(data, dataShards, parityShards);
+        LinearErasureCodec codec = new LinearErasureCodec(dataShards, parityShards);
+        LinearErasureCodec.EncodedBlock encoded = codec.encode(data);
+        byte[][] shards = encoded.encodedFragments();
         int shardSize = shards[0].length;
-        System.out.printf("[1/3] Encoded → %d shards of %d bytes each (%.1f%% overhead).%n",
+        System.out.printf("[1/3] Encoded → %d fragments of %d bytes each (%.1f%% overhead).%n",
                 totalShards, shardSize,
                 100.0 * (totalShards * shardSize - originalLength) / originalLength);
 
-        // ---- 2. Build manifest -----------------------------------------------
+        // ---- 2. Build manifest & compute PoR tags ----------------------------
+        PorSecretKey sk = PorSecretKey.generate();
         ShardManifest manifest = new ShardManifest(fileId);
         manifest.setRsMetadata(dataShards, totalShards, originalLength);
+        manifest.setSecretKey(sk);
 
         for (int i = 0; i < totalShards; i++) {
-            String hash = manifest.registerShard(i, shards[i]);
             manifest.addNodeAddress(nodes.get(i).toHostPort());
-            LOG.fine(String.format("  shard %d → %s  hash=%s", i, nodes.get(i).toHostPort(), hash));
+            long sigma = PorTagEngine.computeTag(sk, i, shards[i]);
+            manifest.registerTag(i, sigma);
+            LOG.fine(String.format("  fragment %d → %s  σ=%d", i, nodes.get(i).toHostPort(), sigma));
         }
-        System.out.printf("[2/3] Manifest built: %d shard hashes recorded.%n", totalShards);
+        System.out.printf("[2/3] Manifest built: %d tags computed.%n", totalShards);
 
         // ---- 3. Fan-out STORE in parallel ------------------------------------
         System.out.printf("[3/3] Uploading %d shards in parallel...%n", totalShards);
         List<CompletableFuture<Void>> futures = new ArrayList<>(totalShards);
 
         for (int i = 0; i < totalShards; i++) {
-            final int     idx  = i;
-            final byte[]  shard = shards[i];
+            final int     idx     = i;
+            final byte[]  shard   = shards[i];
             final NodeAddress node = nodes.get(i);
-            final String  shardId  = manifest.shardId(i);
+            final String  shardId = manifest.shardId(i);
+            final long    sigma   = manifest.getTag(i).sigma();
 
             futures.add(CompletableFuture.runAsync(() -> {
                 try (NodeConnection conn = new NodeConnection(node.host(), node.port())) {
-                    conn.store(shardId, shard);
-                    System.out.printf("  ✅ shard %d → %s  (%d bytes)%n", idx, node.toHostPort(), shard.length);
+                    conn.store(shardId, shard, sigma);
+                    System.out.printf("  ✅ fragment %d → %s  (%d bytes, σ=%d)%n",
+                            idx, node.toHostPort(), shard.length, sigma);
                 } catch (IOException e) {
                     throw new RuntimeException(
-                            "STORE failed for shard " + idx + " on " + node.toHostPort(), e);
+                            "STORE failed for fragment " + idx + " on " + node.toHostPort(), e);
                 }
             }, executor));
         }
@@ -190,7 +198,7 @@ public class ErasureClient {
      * @param outputPath where to write the reconstructed file
      * @return {@code outputPath} on success
      * @throws IOException on unrecoverable I/O error
-     * @throws ReedSolomonHelper.InsufficientShardsException if fewer than {@code k} shards
+     * @throws LinearErasureCodec.InsufficientFragmentsException if fewer than {@code k} fragments
      *         are healthy enough to allow reconstruction
      */
     public Path download(String fileId, ShardManifest manifest, Path outputPath)
@@ -201,11 +209,11 @@ public class ErasureClient {
 
         System.out.println();
         System.out.println("=".repeat(60));
-        System.out.println(" Phase 3 — RS Download");
+        System.out.println(" Phase 3B — POR Download");
         System.out.println("=".repeat(60));
         System.out.printf("  File ID    : %s%n", fileId);
         System.out.printf("  Output     : %s%n", outputPath.toAbsolutePath());
-        System.out.printf("  RS params  : (need %d of %d shards)%n%n", k, total);
+        System.out.printf("  Codec      : (need %d of %d fragments)%n%n", k, total);
 
         // ---- 1. Fan-out RETRIEVE in parallel ---------------------------------
         byte[][] shards  = new byte[total][];
@@ -224,22 +232,16 @@ public class ErasureClient {
                 try (NodeConnection conn = new NodeConnection(node.host(), node.port())) {
                     byte[] bytes = conn.retrieve(shardId);
 
-                    // Hash-verify — mismatch = erasure (AGENTS.md: "mismatch = erasure flag")
-                    if (!manifest.verify(idx, bytes)) {
-                        System.out.printf("  ❌ shard %d [%s] — HASH MISMATCH (treating as erasure)%n",
-                                idx, hostPort);
-                        // leave present[idx] = false
-                        return;
-                    }
-
+                    // Note: SHA-256 verification removed (Phase 3B Step 3).
+                    // Integrity is enforced by PoR challenge-response in Phase 4.
                     shards[idx]  = bytes;
                     present[idx] = true;
                     goodCount.incrementAndGet();
-                    System.out.printf("  ✅ shard %d [%s] — OK (%d bytes)%n",
+                    System.out.printf("  ✅ fragment %d [%s] — OK (%d bytes)%n",
                             idx, hostPort, bytes.length);
 
                 } catch (IOException e) {
-                    System.out.printf("  ⚠️  shard %d [%s] — UNREACHABLE (%s)%n",
+                    System.out.printf("  ⚠️  fragment %d [%s] — UNREACHABLE (%s)%n",
                             idx, hostPort, e.getMessage());
                     // present[idx] remains false — treated as erasure
                 }
@@ -248,19 +250,19 @@ public class ErasureClient {
 
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
-        System.out.printf("%n[2/3] Retrieved %d / %d shards successfully.%n", goodCount.get(), total);
+        System.out.printf("%n[2/3] Retrieved %d / %d fragments successfully.%n", goodCount.get(), total);
 
         // ---- 2. Guard: quorum check -----------------------------------------
         if (goodCount.get() < k) {
-            throw new ReedSolomonHelper.InsufficientShardsException(
-                    "Only " + goodCount.get() + " healthy shards available; need " + k
+            throw new LinearErasureCodec.InsufficientFragmentsException(
+                    "Only " + goodCount.get() + " healthy fragments available; need " + k
                     + " to reconstruct. System is in an unrecoverable state.");
         }
 
-        // ---- 3. Reed-Solomon reconstruction ---------------------------------
-        System.out.println("[3/3] Running Reed-Solomon reconstruction...");
-        byte[] reconstructed = ReedSolomonHelper.decode(
-                shards, present, k, total - k, manifest.getOriginalFileLength());
+        // ---- 3. LinearErasureCodec reconstruction ---------------------------
+        System.out.println("[3/3] Running LinearErasureCodec reconstruction...");
+        LinearErasureCodec codec = new LinearErasureCodec(k, total - k);
+        byte[] reconstructed = codec.decode(shards, present, manifest.getOriginalFileLength());
 
         // ---- 4. Write output -------------------------------------------------
         Files.createDirectories(outputPath.getParent() == null

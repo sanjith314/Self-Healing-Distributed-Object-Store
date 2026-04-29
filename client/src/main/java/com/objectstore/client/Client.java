@@ -25,10 +25,10 @@ import java.util.logging.Logger;
  * # Phase 2 — hash-verified round-trip (single node)
  * java -jar client.jar hash-demo &lt;file&gt; &lt;shardId&gt; &lt;host&gt; &lt;port&gt;
  *
- * # Phase 3 — Reed-Solomon erasure coding across 6 nodes
- * java -jar client.jar rs-upload   &lt;file&gt; &lt;fileId&gt; &lt;node1:port&gt; ... &lt;node6:port&gt;
- * java -jar client.jar rs-download &lt;fileId&gt; &lt;outputFile&gt; &lt;node1:port&gt; ... &lt;node6:port&gt;
- * java -jar client.jar rs-demo     &lt;file&gt; &lt;fileId&gt; &lt;node1:port&gt; ... &lt;node6:port&gt;
+ * # Phase 3B — PoR erasure coding across 6 nodes
+ * java -jar client.jar por-upload   &lt;file&gt; &lt;fileId&gt; &lt;node1:port&gt; ... &lt;node6:port&gt;
+ * java -jar client.jar por-download &lt;fileId&gt; &lt;outputFile&gt; &lt;node1:port&gt; ... &lt;node6:port&gt;
+ * java -jar client.jar por-demo     &lt;file&gt; &lt;fileId&gt; &lt;node1:port&gt; ... &lt;node6:port&gt;
  * </pre>
  */
 public class Client {
@@ -294,34 +294,37 @@ public class Client {
                 }
 
                 // ---------------------------------------------------------------
-                // Phase 3 — Reed-Solomon multi-node commands
+                // Phase 3B — LinearErasureCodec multi-node commands
                 // ---------------------------------------------------------------
 
-                case "rs-upload" -> {
-                    // rs-upload <file> <fileId> <node1:port> ... <nodeN:port>
-                    // Exactly dataShards + parityShards node addresses required (default 6)
-                    int totalShards = ReedSolomonHelper.TOTAL_SHARDS;
-                    requireArgs(args, 3 + totalShards, "rs-upload");
+                case "por-upload" -> {
+                    // por-upload <file> <fileId> <node1:port> ... <nodeN:port>
+                    int totalFragments = LinearErasureCodec.TOTAL_FRAGMENTS;
+                    requireArgs(args, 3 + totalFragments, "por-upload");
                     Path   file   = Paths.get(args[1]);
                     String fileId = args[2];
-                    List<ErasureClient.NodeAddress> nodes = parseNodes(args, 3, totalShards);
+                    List<ErasureClient.NodeAddress> nodes = parseNodes(args, 3, totalFragments);
 
                     ErasureClient ec = new ErasureClient();
                     try {
                         ShardManifest manifest = ec.upload(file, fileId, nodes);
-                        // Persist the manifest locally so rs-download can reload it
                         Path manifestPath = manifestPath(fileId);
                         manifest.save(manifestPath);
                         System.out.printf("Manifest saved → %s%n", manifestPath.toAbsolutePath());
+                        // Save the PoR secret key alongside the manifest
+                        if (manifest.getSecretKey() != null) {
+                            Path keyPath = keyPath(fileId);
+                            manifest.getSecretKey().save(keyPath);
+                            System.out.printf("PoR key saved → %s%n", keyPath.toAbsolutePath());
+                        }
                     } finally {
                         ec.shutdown();
                     }
                 }
 
-                case "rs-download" -> {
-                    // rs-download <fileId> <outputFile> [<node1:port> ... <nodeN:port>]
-                    // If a saved manifest exists for fileId, nodes are optional.
-                    requireArgs(args, 3, "rs-download");
+                case "por-download" -> {
+                    // por-download <fileId> <outputFile> [<node1:port> ... <nodeN:port>]
+                    requireArgs(args, 3, "por-download");
                     String fileId     = args[1];
                     Path   outputPath = Paths.get(args[2]);
 
@@ -331,10 +334,9 @@ public class Client {
                         System.out.printf("Loading manifest from %s%n", savedManifest.toAbsolutePath());
                         manifest = ShardManifest.load(savedManifest);
                     } else {
-                        // Fallback: rebuild from node list supplied on CLI
-                        int totalShards = ReedSolomonHelper.TOTAL_SHARDS;
-                        requireArgs(args, 3 + totalShards, "rs-download");
-                        List<ErasureClient.NodeAddress> nodes = parseNodes(args, 3, totalShards);
+                        int totalFragments = LinearErasureCodec.TOTAL_FRAGMENTS;
+                        requireArgs(args, 3 + totalFragments, "por-download");
+                        List<ErasureClient.NodeAddress> nodes = parseNodes(args, 3, totalFragments);
                         manifest = rebuildManifestFromNodes(fileId, nodes);
                     }
 
@@ -346,35 +348,31 @@ public class Client {
                     }
                 }
 
-                case "rs-demo" -> {
-                    // rs-demo <file> <fileId> <node1:port> ... <nodeN:port>
-                    // Full round-trip: upload → download → diff (manifest kept in RAM)
-                    int totalShards = ReedSolomonHelper.TOTAL_SHARDS;
-                    requireArgs(args, 3 + totalShards, "rs-demo");
+                case "por-demo" -> {
+                    // por-demo <file> <fileId> <node1:port> ... <nodeN:port>
+                    int totalFragments = LinearErasureCodec.TOTAL_FRAGMENTS;
+                    requireArgs(args, 3 + totalFragments, "por-demo");
                     Path   file   = Paths.get(args[1]);
                     String fileId = args[2];
-                    List<ErasureClient.NodeAddress> nodes = parseNodes(args, 3, totalShards);
+                    List<ErasureClient.NodeAddress> nodes = parseNodes(args, 3, totalFragments);
 
                     byte[] original = Files.readAllBytes(file);
 
                     ErasureClient ec = new ErasureClient();
                     try {
-                        // Upload and persist manifest
                         ShardManifest manifest = ec.upload(file, fileId, nodes);
                         manifest.save(manifestPath(fileId));
 
-                        // Download back using the in-RAM manifest (no GETHASH round-trip needed)
                         Path recovered = file.resolveSibling(file.getFileName() + ".recovered");
                         ec.download(fileId, manifest, recovered);
 
-                        // Verify
                         byte[] recoveredBytes = Files.readAllBytes(recovered);
                         boolean match = Arrays.equals(original, recoveredBytes);
                         System.out.println();
                         if (match) {
-                            System.out.println("\u2705  RS-DEMO SUCCESS — recovered bytes are bit-for-bit identical.");
+                            System.out.println("✅  POR-DEMO SUCCESS — recovered bytes are bit-for-bit identical.");
                         } else {
-                            System.out.println("\u274C  RS-DEMO FAILURE — recovered bytes differ from original!");
+                            System.out.println("❌  POR-DEMO FAILURE — recovered bytes differ from original!");
                         }
                         System.exit(match ? 0 : 1);
                     } finally {
@@ -417,6 +415,14 @@ public class Client {
         return Paths.get(fileId + ".manifest");
     }
 
+    /**
+     * Returns the path where the PoR secret key for {@code fileId} is saved/loaded.
+     * Convention: {@code ./<fileId>.porkey} in the current working directory.
+     */
+    private static Path keyPath(String fileId) {
+        return Paths.get(fileId + ".porkey");
+    }
+
 
     /**
      * Parses {@code count} node address strings starting at {@code offset} in {@code args}.
@@ -431,7 +437,7 @@ public class Client {
     }
 
     /**
-     * Rebuilds a {@link ShardManifest} for the {@code rs-download} command by
+     * Rebuilds a {@link ShardManifest} for the {@code por-download} command by
      * fetching the current hash of each shard from its node via GETHASH.
      *
      * <p>In a production system the manifest would be persisted locally; here we
@@ -449,25 +455,12 @@ public class Client {
     private static ShardManifest rebuildManifestFromNodes(
             String fileId, List<ErasureClient.NodeAddress> nodes) throws IOException {
 
-        int totalShards = nodes.size();
-        int dataShards  = ReedSolomonHelper.DATA_SHARDS;
+        int totalFragments = nodes.size();
+        int dataFragments  = LinearErasureCodec.SOURCE_FRAGMENTS;
         ShardManifest manifest = new ShardManifest(fileId);
-        // We don't know originalFileLength at this point; it will be determined
-        // after reconstruction. Set a sentinel — ErasureClient handles the trim.
-        // NOTE: For rs-download to work correctly the user must also supply
-        // the original file length. In Phase 3 we achieve this by storing the
-        // manifest in memory from the upload call (rs-demo). A production system
-        // would persist the manifest to a local DB or file.
-        //
-        // For simplicity this method is only used by standalone rs-download where
-        // we cannot strip padding without knowing originalLength. That sub-command
-        // is best used in conjunction with rs-demo which holds the manifest in RAM.
-        //
-        // We set originalFileLength=0 here to signal "unknown"; ErasureClient will
-        // skip the trim and return the padded bytes when originalLength==0.
-        manifest.setRsMetadata(dataShards, totalShards, 0L /* unknown — see note above */);
+        manifest.setRsMetadata(dataFragments, totalFragments, 0L /* unknown — see note above */);
 
-        for (int i = 0; i < totalShards; i++) {
+        for (int i = 0; i < totalFragments; i++) {
             ErasureClient.NodeAddress node = nodes.get(i);
             manifest.addNodeAddress(node.toHostPort());
             // Register a placeholder hash so verify() doesn't throw; actual
@@ -500,14 +493,14 @@ public class Client {
                   # Phase 2 (hash-verified, single node)
                   java -jar client.jar hash-demo <file> <fileId> <host> <port>
 
-                  # Phase 3 (Reed-Solomon, 6 nodes by default)
-                  java -jar client.jar rs-upload   <file> <fileId> <n1:p1> ... <n6:p6>
-                  java -jar client.jar rs-download <fileId> <outputFile> <n1:p1> ... <n6:p6>
-                  java -jar client.jar rs-demo     <file> <fileId> <n1:p1> ... <n6:p6>
+                  # Phase 3B (LinearErasureCodec + PoR, 6 nodes by default)
+                  java -jar client.jar por-upload   <file> <fileId> <n1:p1> ... <n6:p6>
+                  java -jar client.jar por-download <fileId> <outputFile> <n1:p1> ... <n6:p6>
+                  java -jar client.jar por-demo     <file> <fileId> <n1:p1> ... <n6:p6>
 
                 Examples:
                   java -jar client.jar demo testfile.bin shard-0 localhost 7100
-                  java -jar client.jar rs-demo myfile.txt myfile \\
+                  java -jar client.jar por-demo myfile.txt myfile \\
                     localhost:7100 localhost:7101 localhost:7102 \\
                     localhost:7103 localhost:7104 localhost:7105
                 """);

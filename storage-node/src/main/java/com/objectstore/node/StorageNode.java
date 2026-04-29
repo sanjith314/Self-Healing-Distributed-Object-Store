@@ -113,14 +113,35 @@ public class StorageNode {
         String shardId = Protocol.readString(in);
         byte[] data    = Protocol.readBytes(in, MAX_SHARD_BYTES);
 
-        LOG.info(String.format("[STORE] shard='%s'  bytes=%d  from=%s", shardId, data.length, remote));
+        // Phase 3B: read the 8-byte PoR tag (sigma) appended after the data.
+        // Older clients (sigma=0) write 0L; we always attempt to read 8 bytes.
+        long sigma = 0L;
+        try {
+            sigma = in.readLong();
+        } catch (EOFException eof) {
+            // Legacy client without tag — sigma stays 0
+            LOG.fine("[STORE] No sigma in payload for shard '" + shardId + "' (legacy client)");
+        }
+
+        LOG.info(String.format("[STORE] shard='%s'  bytes=%d  σ=%d  from=%s",
+                shardId, data.length, sigma, remote));
 
         try {
             Path target = shardPath(shardId);
             Files.createDirectories(target.getParent());
             Files.write(target, data);
+
+            // Write the PoR tag to a companion .tag file (8 bytes, big-endian)
+            Path tagPath = Path.of(target + ".tag");
+            byte[] tagBytes = new byte[8];
+            for (int i = 7; i >= 0; i--) {
+                tagBytes[i] = (byte) (sigma & 0xFF);
+                sigma >>= 8;
+            }
+            Files.write(tagPath, tagBytes);
+
             out.writeByte(Protocol.STATUS_OK);
-            LOG.info(String.format("[STORE] OK  shard='%s'", shardId));
+            LOG.info(String.format("[STORE] OK  shard='%s'  .tag written", shardId));
         } catch (IOException e) {
             LOG.log(Level.SEVERE, "[STORE] Failed to write shard '" + shardId + "'", e);
             out.writeByte(Protocol.STATUS_ERROR);

@@ -59,28 +59,52 @@ public class NodeConnection implements AutoCloseable {
     // -----------------------------------------------------------------------
 
     /**
-     * Sends a {@code STORE} request and waits for the node's acknowledgement.
+     * Sends a {@code STORE} request without a PoR tag (backward-compatible, sigma = 0).
      *
-     * @param shardId unique shard identifier (may include '/' as separator)
+     * @param shardId unique shard identifier
      * @param data    raw shard bytes to persist
-     * @throws IOException          on network or I/O error
-     * @throws StorageException     if the node returns STATUS_ERROR
+     * @throws IOException      on network or I/O error
+     * @throws StorageException if the node returns STATUS_ERROR
      */
     public void store(String shardId, byte[] data) throws IOException {
-        LOG.fine(String.format("[STORE] shard='%s'  bytes=%d  →  %s:%d", shardId, data.length, host, port));
+        store(shardId, data, 0L);
+    }
 
-        // Build request
+    /**
+     * Sends a {@code STORE} request with a Shacham-Waters PRF tag.
+     *
+     * <p>Wire format (after the existing CMD_STORE header):
+     * <pre>
+     *   [1 byte]  CMD_STORE
+     *   [string]  shardId   (length-prefixed UTF-8)
+     *   [bytes]   data      (length-prefixed byte array)
+     *   [8 bytes] sigma     (big-endian long, Z_p tag value)
+     * </pre>
+     * Nodes that do not understand the extended format will attempt to read a
+     * fifth field they do not expect; updating StorageNode to always read the
+     * sigma is the cleanest fix (Phase 3B Step 6).
+     *
+     * @param shardId unique shard identifier
+     * @param data    raw shard bytes to persist
+     * @param sigma   PoR tag value σᵢ ∈ [0, p)
+     * @throws IOException      on network or I/O error
+     * @throws StorageException if the node returns STATUS_ERROR
+     */
+    public void store(String shardId, byte[] data, long sigma) throws IOException {
+        LOG.fine(String.format("[STORE] shard='%s'  bytes=%d  σ=%d  →  %s:%d",
+                shardId, data.length, sigma, host, port));
+
         out.writeByte(Protocol.CMD_STORE);
         Protocol.writeString(out, shardId);
         Protocol.writeBytes(out, data);
+        out.writeLong(sigma);   // 8-byte PoR tag appended after data
         out.flush();
 
-        // Read response
         byte status = in.readByte();
         if (status != Protocol.STATUS_OK) {
             throw new StorageException("STORE failed for shard '" + shardId + "' on " + host + ":" + port);
         }
-        LOG.fine("[STORE] OK  shard='" + shardId + "'");
+        LOG.fine("[STORE] OK  shard='" + shardId + "'  σ=" + sigma);
     }
 
     /**
