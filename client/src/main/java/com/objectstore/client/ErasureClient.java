@@ -111,7 +111,7 @@ public class ErasureClient {
 
         System.out.println();
         System.out.println("=".repeat(60));
-        System.out.println(" Phase 3B — POR Upload");
+        System.out.println(" Phase 4 — FPCC Upload (Hendricks-Ganger-Reiter)");
         System.out.println("=".repeat(60));
         System.out.printf("  File        : %s%n", filePath.toAbsolutePath());
         System.out.printf("  File ID     : %s%n", fileId);
@@ -131,11 +131,16 @@ public class ErasureClient {
                 totalShards, shardSize,
                 100.0 * (totalShards * shardSize - originalLength) / originalLength);
 
-        // ---- 2. Build manifest & compute PoR tags ----------------------------
+        // ---- 2. Build manifest & compute PoR tags + FPCC --------------------
         PorSecretKey sk = PorSecretKey.generate();
         ShardManifest manifest = new ShardManifest(fileId);
         manifest.setRsMetadata(dataShards, totalShards, originalLength);
         manifest.setSecretKey(sk);
+
+        // Compute FPCC from source + encoded fragments
+        FingerprintedCrossChecksum fpcc =
+                FingerprintedCrossChecksum.create(encoded.sourceFragments(), shards, codec);
+        manifest.setFingerprintCrossChecksum(fpcc);
 
         for (int i = 0; i < totalShards; i++) {
             manifest.addNodeAddress(nodes.get(i).toHostPort());
@@ -143,7 +148,7 @@ public class ErasureClient {
             manifest.registerTag(i, sigma);
             LOG.fine(String.format("  fragment %d → %s  σ=%d", i, nodes.get(i).toHostPort(), sigma));
         }
-        System.out.printf("[2/3] Manifest built: %d tags computed.%n", totalShards);
+        System.out.printf("[2/3] Manifest built: %d tags + FPCC computed.%n", totalShards);
 
         // ---- 3. Fan-out STORE in parallel ------------------------------------
         System.out.printf("[3/3] Uploading %d shards in parallel...%n", totalShards);
@@ -155,11 +160,18 @@ public class ErasureClient {
             final NodeAddress node = nodes.get(i);
             final String  shardId = manifest.shardId(i);
             final long    sigma   = manifest.getTag(i).sigma();
+            // Pre-compute per-fragment FPCC data for the node to verify on receipt
+            final com.objectstore.common.Protocol.FpccFragmentData fpccFrag =
+                    new com.objectstore.common.Protocol.FpccFragmentData(
+                            fpcc.fingerprintBytes(),
+                            fpcc.seed(),
+                            fpcc.expectedHash(i),
+                            fpcc.expectedEncodedFingerprint(i, codec));
 
             futures.add(CompletableFuture.runAsync(() -> {
                 try (NodeConnection conn = new NodeConnection(node.host(), node.port())) {
-                    conn.store(shardId, shard, sigma);
-                    System.out.printf("  ✅ fragment %d → %s  (%d bytes, σ=%d)%n",
+                    conn.store(shardId, shard, sigma, fpccFrag);
+                    System.out.printf("  ✅ fragment %d → %s  (%d bytes, σ=%d, fpcc=yes)%n",
                             idx, node.toHostPort(), shard.length, sigma);
                 } catch (IOException e) {
                     throw new RuntimeException(
@@ -209,7 +221,7 @@ public class ErasureClient {
 
         System.out.println();
         System.out.println("=".repeat(60));
-        System.out.println(" Phase 3B — POR Download");
+        System.out.println(" Phase 4 — FPCC Download (Hendricks-Ganger-Reiter)");
         System.out.println("=".repeat(60));
         System.out.printf("  File ID    : %s%n", fileId);
         System.out.printf("  Output     : %s%n", outputPath.toAbsolutePath());
@@ -219,6 +231,10 @@ public class ErasureClient {
         byte[][] shards  = new byte[total][];
         boolean[] present = new boolean[total];
         AtomicInteger goodCount = new AtomicInteger(0);
+
+        // Load FPCC from manifest for client-side verification
+        final FingerprintedCrossChecksum fpcc = manifest.getFingerprintCrossChecksum();
+        final LinearErasureCodec codec = new LinearErasureCodec(k, total - k);
 
         List<CompletableFuture<Void>> futures = new ArrayList<>(total);
 
@@ -232,8 +248,18 @@ public class ErasureClient {
                 try (NodeConnection conn = new NodeConnection(node.host(), node.port())) {
                     byte[] bytes = conn.retrieve(shardId);
 
-                    // Note: SHA-256 verification removed (Phase 3B Step 3).
-                    // Integrity is enforced by PoR challenge-response in Phase 4.
+                    // Phase 4: FPCC client-side verification.
+                    // If the manifest has an FPCC, verify the downloaded fragment.
+                    // A failed check → treat as erasure (not an exception).
+                    if (fpcc != null) {
+                        if (!fpcc.verifyFragment(idx, bytes, codec)) {
+                            System.out.printf("  ⚠️  fragment %d [%s] — FPCC FAILED (hash or fingerprint mismatch, treating as erasure)%n",
+                                    idx, hostPort);
+                            // present[idx] stays false — erasure
+                            return;
+                        }
+                    }
+
                     shards[idx]  = bytes;
                     present[idx] = true;
                     goodCount.incrementAndGet();
@@ -261,7 +287,6 @@ public class ErasureClient {
 
         // ---- 3. LinearErasureCodec reconstruction ---------------------------
         System.out.println("[3/3] Running LinearErasureCodec reconstruction...");
-        LinearErasureCodec codec = new LinearErasureCodec(k, total - k);
         byte[] reconstructed = codec.decode(shards, present, manifest.getOriginalFileLength());
 
         // ---- 4. Write output -------------------------------------------------

@@ -2,6 +2,7 @@ package com.objectstore.common;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
@@ -20,6 +21,13 @@ import java.nio.charset.StandardCharsets;
  * -- STORE only --
  * [8 bytes]  data length in bytes (big-endian long)
  * [M bytes]  raw shard data
+ * [8 bytes]  sigma   — PoR tag (big-endian long; 0 if unused)
+ * [1 byte]   hasFpcc — 0x00 = no FPCC, 0x01 = FPCC present
+ * -- if hasFpcc == 0x01 --
+ * [4 bytes]  fingerprintBytes
+ * [bytes]    seed               (length-prefixed byte array)
+ * [string]   expectedHash       (length-prefixed UTF-8 hex, always 64 chars)
+ * [bytes]    expectedFingerprint (length-prefixed byte array)
  * </pre>
  *
  * <h2>Response format — STORE</h2>
@@ -126,6 +134,68 @@ public final class Protocol {
         byte[] data = new byte[(int) len];
         in.readFully(data);
         return data;
+    }
+
+    // -----------------------------------------------------------------------
+    // FPCC (Fingerprinted Cross-Checksum) wire helpers — Phase 4
+    // -----------------------------------------------------------------------
+
+    /**
+     * Immutable per-fragment FPCC verification data sent with each STORE request.
+     *
+     * <p>The client pre-computes these values from the full
+     * {@code FingerprintedCrossChecksum} object and passes them to
+     * {@link #writeFpccFragment} so the receiving node can verify the fragment
+     * before writing it to disk.
+     *
+     * @param fingerprintBytes  size of each fingerprint vector in bytes
+     * @param seed              random oracle seed derived from all fragment hashes
+     * @param expectedHash      SHA-256 hex digest of this specific fragment (cc[i])
+     * @param expectedFingerprint  encoded fingerprint for this position
+     *                            (= encodeFingerprint(codingRow[i], sourceFps))
+     */
+    public record FpccFragmentData(
+            int    fingerprintBytes,
+            byte[] seed,
+            String expectedHash,
+            byte[] expectedFingerprint) {}
+
+    /**
+     * Writes per-fragment FPCC data to the stream.
+     *
+     * <p>Writes a leading {@code 0x01} (has-FPCC flag) followed by the four fields.
+     * Counterpart: {@link #readFpccFragment}.
+     */
+    public static void writeFpccFragment(DataOutputStream out, FpccFragmentData fpcc)
+            throws IOException {
+        out.writeByte(0x01);
+        out.writeInt(fpcc.fingerprintBytes());
+        writeBytes(out, fpcc.seed());
+        writeString(out, fpcc.expectedHash());
+        writeBytes(out, fpcc.expectedFingerprint());
+    }
+
+    /**
+     * Reads the has-FPCC flag and, if present, the FPCC fields.
+     *
+     * @return the parsed {@link FpccFragmentData}, or {@code null} if the flag byte
+     *         is {@code 0x00} (no FPCC attached — backward-compatible with Phase 3B clients)
+     */
+    public static FpccFragmentData readFpccFragment(DataInputStream in) throws IOException {
+        byte hasFpcc;
+        try {
+            hasFpcc = in.readByte();
+        } catch (EOFException eof) {
+            return null;
+        }
+        if (hasFpcc == 0x00) {
+            return null;
+        }
+        int    fpBytes     = in.readInt();
+        byte[] seed        = readBytes(in, 256);
+        String expHash     = readString(in);
+        byte[] expFp       = readBytes(in, (long) fpBytes * 4 + 64);
+        return new FpccFragmentData(fpBytes, seed, expHash, expFp);
     }
 
     // Prevent instantiation — utility class only.

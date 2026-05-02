@@ -98,6 +98,7 @@ public class NodeConnection implements AutoCloseable {
         Protocol.writeString(out, shardId);
         Protocol.writeBytes(out, data);
         out.writeLong(sigma);   // 8-byte PoR tag appended after data
+        out.writeByte(0x00);    // no FPCC
         out.flush();
 
         byte status = in.readByte();
@@ -105,6 +106,49 @@ public class NodeConnection implements AutoCloseable {
             throw new StorageException("STORE failed for shard '" + shardId + "' on " + host + ":" + port);
         }
         LOG.fine("[STORE] OK  shard='" + shardId + "'  σ=" + sigma);
+    }
+
+    /**
+     * Sends a {@code STORE} request with a PoR tag and FPCC per-fragment verification data.
+     *
+     * <p>Wire format:
+     * <pre>
+     *   [1 byte]  CMD_STORE
+     *   [string]  shardId
+     *   [bytes]   data
+     *   [8 bytes] sigma
+     *   [FPCC]    has-fpcc(1) + fingerprintBytes(4) + seed(bytes) + expectedHash(string) + expectedFp(bytes)
+     * </pre>
+     *
+     * @param shardId  unique shard identifier
+     * @param data     raw shard bytes to persist
+     * @param sigma    PoR tag value σᵢ (0 if not used)
+     * @param fpcc     per-fragment FPCC verification data; {@code null} sends has-fpcc=0x00
+     * @throws IOException      on network or I/O error
+     * @throws StorageException if the node returns STATUS_ERROR (e.g. FPCC verification failed)
+     */
+    public void store(String shardId, byte[] data, long sigma, Protocol.FpccFragmentData fpcc)
+            throws IOException {
+        LOG.fine(String.format("[STORE] shard='%s'  bytes=%d  σ=%d  fpcc=%s  →  %s:%d",
+                shardId, data.length, sigma, fpcc != null ? "yes" : "no", host, port));
+
+        out.writeByte(Protocol.CMD_STORE);
+        Protocol.writeString(out, shardId);
+        Protocol.writeBytes(out, data);
+        out.writeLong(sigma);
+        if (fpcc != null) {
+            Protocol.writeFpccFragment(out, fpcc);
+        } else {
+            out.writeByte(0x00);  // no FPCC
+        }
+        out.flush();
+
+        byte status = in.readByte();
+        if (status != Protocol.STATUS_OK) {
+            throw new StorageException("STORE failed for shard '" + shardId + "' on " + host + ":" + port
+                    + " (node rejected the fragment — FPCC mismatch or I/O error)");
+        }
+        LOG.fine("[STORE] OK  shard='" + shardId + "'");
     }
 
     /**

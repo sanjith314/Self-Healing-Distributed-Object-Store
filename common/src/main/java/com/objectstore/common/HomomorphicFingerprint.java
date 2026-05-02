@@ -1,6 +1,4 @@
-package com.objectstore.client;
-
-import com.objectstore.common.HashUtil;
+package com.objectstore.common;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
@@ -10,10 +8,10 @@ import java.util.Arrays;
 /**
  * Compact linear fingerprints for encoded fragments.
  *
- * <p>This implementation is intentionally algebraic rather than cryptographic:
- * coefficients are derived from a SHA-256 seed, and each output byte is a linear
- * projection over GF(2^8). That gives the property needed by the paper:
- * fingerprinting commutes with the linear erasure code.
+ * <p>Coefficients are derived from a SHA-256 seed and each output byte is a linear
+ * projection over GF(2^8). This gives the homomorphic property required by
+ * Hendricks, Ganger &amp; Reiter (PODC 2007): fingerprinting commutes with the
+ * linear erasure code.
  */
 public final class HomomorphicFingerprint {
 
@@ -85,13 +83,13 @@ public final class HomomorphicFingerprint {
         return result;
     }
 
-    public byte[] scalarMultiply(byte[] fingerprint, int scalar) {
-        if (fingerprint.length != fingerprintBytes) {
+    public byte[] scalarMultiply(byte[] fp, int scalar) {
+        if (fp.length != fingerprintBytes) {
             throw new IllegalArgumentException("fingerprint size mismatch");
         }
         byte[] result = new byte[fingerprintBytes];
         for (int i = 0; i < fingerprintBytes; i++) {
-            result[i] = (byte) GaloisField256.multiply(scalar, fingerprint[i] & 0xFF);
+            result[i] = (byte) GaloisField256.multiply(scalar, fp[i] & 0xFF);
         }
         return result;
     }

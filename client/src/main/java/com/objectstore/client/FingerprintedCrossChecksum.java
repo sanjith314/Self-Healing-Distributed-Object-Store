@@ -1,6 +1,7 @@
 package com.objectstore.client;
 
 import com.objectstore.common.HashUtil;
+import com.objectstore.common.HomomorphicFingerprint;
 
 import java.util.Arrays;
 import java.util.Objects;

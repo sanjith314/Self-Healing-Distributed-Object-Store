@@ -1,5 +1,7 @@
 package com.objectstore.client;
 
+import com.objectstore.common.GaloisField256;
+import com.objectstore.common.HomomorphicFingerprint;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

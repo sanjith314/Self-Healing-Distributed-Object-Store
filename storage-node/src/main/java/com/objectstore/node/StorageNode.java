@@ -2,6 +2,7 @@ package com.objectstore.node;
 
 import com.objectstore.common.Protocol;
 import com.objectstore.common.HashUtil;
+import com.objectstore.common.HomomorphicFingerprint;
 
 import java.io.*;
 import java.net.ServerSocket;
@@ -9,6 +10,7 @@ import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.logging.Level;
@@ -113,18 +115,46 @@ public class StorageNode {
         String shardId = Protocol.readString(in);
         byte[] data    = Protocol.readBytes(in, MAX_SHARD_BYTES);
 
-        // Phase 3B: read the 8-byte PoR tag (sigma) appended after the data.
-        // Older clients (sigma=0) write 0L; we always attempt to read 8 bytes.
+        // Read 8-byte PoR tag (sigma) — 0L from older clients that omit it
         long sigma = 0L;
         try {
             sigma = in.readLong();
         } catch (EOFException eof) {
-            // Legacy client without tag — sigma stays 0
             LOG.fine("[STORE] No sigma in payload for shard '" + shardId + "' (legacy client)");
         }
 
-        LOG.info(String.format("[STORE] shard='%s'  bytes=%d  σ=%d  from=%s",
-                shardId, data.length, sigma, remote));
+        // Read optional FPCC per-fragment verification data (Phase 4)
+        Protocol.FpccFragmentData fpcc = Protocol.readFpccFragment(in);
+
+        LOG.info(String.format("[STORE] shard='%s'  bytes=%d  σ=%d  fpcc=%s  from=%s",
+                shardId, data.length, sigma, fpcc != null ? "yes" : "no", remote));
+
+        // --- FPCC verification (Phase 4) ------------------------------------
+        // Verify the fragment against the client-supplied expected hash and
+        // expected encoded fingerprint BEFORE writing to disk. A mismatch means
+        // the client is sending corrupted or inconsistent data.
+        if (fpcc != null) {
+            String actualHash = HashUtil.sha256Hex(data);
+            if (!actualHash.equals(fpcc.expectedHash())) {
+                LOG.warning(String.format(
+                        "[STORE] REJECTED shard='%s' — hash mismatch: expected=%s actual=%s",
+                        shardId, fpcc.expectedHash(), actualHash));
+                out.writeByte(Protocol.STATUS_ERROR);
+                out.flush();
+                return;
+            }
+
+            byte[] actualFp = new HomomorphicFingerprint(fpcc.seed(), fpcc.fingerprintBytes())
+                    .fingerprint(data);
+            if (!Arrays.equals(actualFp, fpcc.expectedFingerprint())) {
+                LOG.warning(String.format(
+                        "[STORE] REJECTED shard='%s' — fingerprint mismatch", shardId));
+                out.writeByte(Protocol.STATUS_ERROR);
+                out.flush();
+                return;
+            }
+            LOG.info("[STORE] FPCC verified for shard='" + shardId + "'");
+        }
 
         try {
             Path target = shardPath(shardId);
@@ -134,9 +164,10 @@ public class StorageNode {
             // Write the PoR tag to a companion .tag file (8 bytes, big-endian)
             Path tagPath = Path.of(target + ".tag");
             byte[] tagBytes = new byte[8];
+            long sigmaVal = sigma;
             for (int i = 7; i >= 0; i--) {
-                tagBytes[i] = (byte) (sigma & 0xFF);
-                sigma >>= 8;
+                tagBytes[i] = (byte) (sigmaVal & 0xFF);
+                sigmaVal >>= 8;
             }
             Files.write(tagPath, tagBytes);
 

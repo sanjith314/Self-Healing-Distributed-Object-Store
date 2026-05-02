@@ -1,4 +1,4 @@
-package com.objectstore.client;
+package com.objectstore.common;
 
 /**
  * Arithmetic over GF(2^8) using the common primitive polynomial x^8+x^4+x^3+x^2+1.
@@ -98,9 +98,9 @@ public final class GaloisField256 {
             }
 
             int pivotValue = augmented[col][col] & 0xFF;
-            int inverse = inverse(pivotValue);
+            int inv = inverse(pivotValue);
             for (int j = 0; j < n * 2; j++) {
-                augmented[col][j] = (byte) multiply(augmented[col][j] & 0xFF, inverse);
+                augmented[col][j] = (byte) multiply(augmented[col][j] & 0xFF, inv);
             }
 
             for (int row = 0; row < n; row++) {
@@ -118,11 +118,11 @@ public final class GaloisField256 {
             }
         }
 
-        byte[][] inverse = new byte[n][n];
+        byte[][] result = new byte[n][n];
         for (int row = 0; row < n; row++) {
-            System.arraycopy(augmented[row], n, inverse[row], 0, n);
+            System.arraycopy(augmented[row], n, result[row], 0, n);
         }
-        return inverse;
+        return result;
     }
 
     private GaloisField256() {}

@@ -1,5 +1,7 @@
 package com.objectstore.client;
 
+import com.objectstore.common.GaloisField256;
+
 import java.util.Arrays;
 
 /**
