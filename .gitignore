@@ -20,3 +20,7 @@ data/
 
 # ── macOS noise ───────────────────────────────────────────────────────────────
 .DS_Store
+
+# ── Agent/AI instruction files (local-only, never pushed) ─────────────────────
+AGENTS.md
+CLAUDE.md
