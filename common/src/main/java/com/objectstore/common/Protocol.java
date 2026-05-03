@@ -16,6 +16,8 @@ import java.nio.charset.StandardCharsets;
  * <h2>Request format (shared header)</h2>
  * <pre>
  * [1 byte]   command   — CMD_STORE (0x01) | CMD_RETRIEVE (0x02) | CMD_GETHASH (0x03)
+ *                        CMD_DISPERSE (0x05) | CMD_ECHO (0x06) | CMD_READY (0x07)
+ *                        CMD_RETRIEVE_AVID (0x08)
  * [4 bytes]  shardId length in bytes (big-endian int)
  * [N bytes]  shardId encoded as UTF-8
  * -- STORE only --
@@ -75,7 +77,31 @@ public final class Protocol {
      * store hashes. This prevents a Byzantine node from caching a fake hash
      * for corrupted data.
      */
-    public static final byte CMD_GETHASH  = 0x03;
+    public static final byte CMD_GETHASH       = 0x03;
+
+    /**
+     * AVID-FP DISPERSE (Phase 5): client sends (fpcc, fragment_i) to server i.
+     * Server verifies the fragment, stores it, then echoes the FPCC to peers.
+     */
+    public static final byte CMD_DISPERSE      = 0x05;
+
+    /**
+     * AVID-FP ECHO (Phase 5): server-to-server message propagating the FPCC.
+     * Sender's address (host:port string) included so receivers can track EchoSet.
+     */
+    public static final byte CMD_ECHO          = 0x06;
+
+    /**
+     * AVID-FP READY (Phase 5): server-to-server message broadcast when echo quorum
+     * ({@code |EchoSet| >= m+f}) or ready-chain ({@code |ReadySet| >= f+1}) is reached.
+     */
+    public static final byte CMD_READY         = 0x07;
+
+    /**
+     * AVID-FP RETRIEVE (Phase 5): client retrieves (verified_fpcc, fragment) from a server
+     * that has reached the ready quorum.
+     */
+    public static final byte CMD_RETRIEVE_AVID = 0x08;
 
     // -----------------------------------------------------------------------
     // Status bytes
@@ -196,6 +222,82 @@ public final class Protocol {
         String expHash     = readString(in);
         byte[] expFp       = readBytes(in, (long) fpBytes * 4 + 64);
         return new FpccFragmentData(fpBytes, seed, expHash, expFp);
+    }
+
+    // -----------------------------------------------------------------------
+    // Full-FPCC wire helpers for AVID-FP (Phase 5)
+    // -----------------------------------------------------------------------
+
+    /**
+     * The complete Fingerprinted Cross-Checksum sent in AVID-FP DISPERSE / ECHO / READY
+     * messages. Carries all information peers need to verify any fragment independently.
+     *
+     * @param crossChecksum   SHA-256 hex digests of all n fragments, indexed 0..n-1
+     * @param fingerprints    encoded fingerprint vectors for the k source fragments (fp[i])
+     * @param seed            random oracle seed derived from crossChecksum[]
+     * @param fingerprintBytes  size of each fingerprint vector in bytes
+     */
+    public record FullFpccData(
+            String[] crossChecksum,
+            byte[][] fingerprints,
+            byte[]   seed,
+            int      fingerprintBytes) {}
+
+    /**
+     * Writes a {@link FullFpccData} to the stream.
+     *
+     * <p>Wire format:
+     * <pre>
+     * [4 bytes]   n — number of entries in crossChecksum[]
+     * [n strings] crossChecksum[i]   (each: 4-byte len + UTF-8)
+     * [4 bytes]   k — number of fingerprints
+     * [k arrays]  fingerprints[i]    (each: 8-byte len + raw bytes)
+     * [bytes]     seed               (8-byte len + raw bytes)
+     * [4 bytes]   fingerprintBytes
+     * </pre>
+     */
+    public static void writeFullFpcc(DataOutputStream out, FullFpccData fpcc)
+            throws IOException {
+        out.writeInt(fpcc.crossChecksum().length);
+        for (String cc : fpcc.crossChecksum()) {
+            writeString(out, cc);
+        }
+        out.writeInt(fpcc.fingerprints().length);
+        for (byte[] fp : fpcc.fingerprints()) {
+            writeBytes(out, fp);
+        }
+        writeBytes(out, fpcc.seed());
+        out.writeInt(fpcc.fingerprintBytes());
+    }
+
+    /**
+     * Reads a {@link FullFpccData} written by {@link #writeFullFpcc}.
+     */
+    public static FullFpccData readFullFpcc(DataInputStream in) throws IOException {
+        int n = in.readInt();
+        if (n < 0 || n > 1024) {
+            throw new IOException("Implausible crossChecksum length: " + n);
+        }
+        String[] cc = new String[n];
+        for (int i = 0; i < n; i++) {
+            cc[i] = readString(in);
+        }
+
+        int k = in.readInt();
+        if (k < 0 || k > n) {
+            throw new IOException("Implausible fingerprint count: " + k);
+        }
+        byte[][] fps = new byte[k][];
+        for (int i = 0; i < k; i++) {
+            fps[i] = readBytes(in, 4096);
+        }
+
+        byte[] seed = readBytes(in, 256);
+        int fpBytes = in.readInt();
+        if (fpBytes < 1 || fpBytes > 256) {
+            throw new IOException("Implausible fingerprintBytes: " + fpBytes);
+        }
+        return new FullFpccData(cc, fps, seed, fpBytes);
     }
 
     // Prevent instantiation — utility class only.

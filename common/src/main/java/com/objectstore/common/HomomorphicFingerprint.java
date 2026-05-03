@@ -6,12 +6,17 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 /**
- * Compact linear fingerprints for encoded fragments.
+ * Evaluation fingerprinting over GF(2^8) as defined in Hendricks, Ganger &amp; Reiter
+ * (PODC 2007), Theorem 2.4.
  *
- * <p>Coefficients are derived from a SHA-256 seed and each output byte is a linear
- * projection over GF(2^8). This gives the homomorphic property required by
- * Hendricks, Ganger &amp; Reiter (PODC 2007): fingerprinting commutes with the
- * linear erasure code.
+ * <p>Each output byte is the evaluation of the data polynomial
+ * {@code d(x) = d[0] + d[1]·x + ... + d[L-1]·x^{L-1}} over GF(2^8) at a distinct
+ * random evaluation point {@code sⱼ}, derived from the seed. Evaluation is performed
+ * using Horner's rule, requiring only GF(2^8) multiply and add.
+ *
+ * <p>This gives the homomorphic property (Definition 2.5): if {@code dᵢ = Σⱼ bᵢⱼ·dⱼ}
+ * (linear combination in GF(2^8)), then {@code fp(s, dᵢ) = Σⱼ bᵢⱼ·fp(s, dⱼ)} because
+ * polynomial evaluation is a GF(2^8) ring homomorphism.
  */
 public final class HomomorphicFingerprint {
 
@@ -35,17 +40,29 @@ public final class HomomorphicFingerprint {
         this.fingerprintBytes = fingerprintBytes;
     }
 
+    /**
+     * Computes the evaluation fingerprint of {@code data}.
+     *
+     * <p>For each output slot {@code j}, the data bytes are interpreted as coefficients of
+     * a polynomial {@code d(x) = d[0] + d[1]·x + ... + d[L-1]·x^{L-1}} over GF(2^8),
+     * and the result is {@code d(sⱼ)} computed by Horner's rule:
+     * <pre>
+     *   fp = d[L-1]
+     *   for i = L-2 downto 0:  fp = GF256_multiply(fp, sⱼ) XOR d[i]
+     * </pre>
+     * This is Theorem 2.4 (evaluation fingerprinting) from Hendricks et al.
+     */
     public byte[] fingerprint(byte[] data) {
         byte[] result = new byte[fingerprintBytes];
-        for (int offset = 0; offset < data.length; offset++) {
-            int value = data[offset] & 0xFF;
-            if (value == 0) {
-                continue;
+        for (int slot = 0; slot < fingerprintBytes; slot++) {
+            int s = evaluationPoint(slot);
+            int fp = 0;
+            for (int i = data.length - 1; i >= 0; i--) {
+                fp = GaloisField256.add(
+                        GaloisField256.multiply(fp, s),
+                        data[i] & 0xFF);
             }
-            for (int slot = 0; slot < fingerprintBytes; slot++) {
-                int coefficient = coefficient(offset, slot);
-                result[slot] ^= (byte) GaloisField256.multiply(value, coefficient);
-            }
+            result[slot] = (byte) fp;
         }
         return result;
     }
@@ -112,15 +129,19 @@ public final class HomomorphicFingerprint {
         return HashUtil.sha256(out.toByteArray());
     }
 
-    private int coefficient(int offset, int slot) {
-        byte[] offsetBytes = ByteBuffer.allocate(Integer.BYTES * 2)
-                .putInt(offset)
-                .putInt(slot)
-                .array();
-        byte[] input = new byte[seed.length + offsetBytes.length];
+    /**
+     * Derives the evaluation point {@code sⱼ ∈ GF(2^8)} for output slot {@code j}.
+     *
+     * <p>Computed as the first byte of {@code SHA-256(seed || j)}, mapping each slot to
+     * a distinct, seed-dependent, non-zero field element. Non-zero is enforced because
+     * evaluation at 0 collapses the polynomial to its constant term, losing all
+     * higher-degree information and breaking the homomorphic property for parity fragments.
+     */
+    private int evaluationPoint(int slot) {
+        byte[] input = new byte[seed.length + Integer.BYTES];
         System.arraycopy(seed, 0, input, 0, seed.length);
-        System.arraycopy(offsetBytes, 0, input, seed.length, offsetBytes.length);
-        int c = HashUtil.sha256(input)[0] & 0xFF;
-        return c == 0 ? 1 : c;
+        ByteBuffer.wrap(input, seed.length, Integer.BYTES).putInt(slot);
+        int s = HashUtil.sha256(input)[0] & 0xFF;
+        return s == 0 ? 1 : s;
     }
 }

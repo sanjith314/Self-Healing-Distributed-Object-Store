@@ -29,6 +29,10 @@ import java.util.logging.Logger;
  * java -jar client.jar por-upload   &lt;file&gt; &lt;fileId&gt; &lt;node1:port&gt; ... &lt;node6:port&gt;
  * java -jar client.jar por-download &lt;fileId&gt; &lt;outputFile&gt; &lt;node1:port&gt; ... &lt;node6:port&gt;
  * java -jar client.jar por-demo     &lt;file&gt; &lt;fileId&gt; &lt;node1:port&gt; ... &lt;node6:port&gt;
+ *
+ * # Phase 5 — AVID-FP (Hendricks-Ganger-Reiter PODC 2007)
+ * java -jar client.jar avid-disperse &lt;file&gt; &lt;fileId&gt; &lt;node1:port&gt; ... &lt;node6:port&gt;
+ * java -jar client.jar avid-retrieve &lt;fileId&gt; &lt;originalLen&gt; &lt;outputFile&gt; &lt;node1:port&gt; ... &lt;node6:port&gt;
  * </pre>
  */
 public class Client {
@@ -380,6 +384,43 @@ public class Client {
                     }
                 }
 
+                // ---------------------------------------------------------------
+                // Phase 5 — AVID-FP (Hendricks-Ganger-Reiter)
+                // ---------------------------------------------------------------
+
+                case "avid-disperse" -> {
+                    // avid-disperse <file> <fileId> <node1:port> ... <nodeN:port>
+                    int totalFragments = LinearErasureCodec.TOTAL_FRAGMENTS;
+                    requireArgs(args, 3 + totalFragments, "avid-disperse");
+                    Path   file   = Paths.get(args[1]);
+                    String fileId = args[2];
+                    List<ErasureClient.NodeAddress> nodes = parseNodes(args, 3, totalFragments);
+
+                    AvidFpClient avid = new AvidFpClient();
+                    try {
+                        avid.disperse(file, fileId, nodes);
+                    } finally {
+                        avid.shutdown();
+                    }
+                }
+
+                case "avid-retrieve" -> {
+                    // avid-retrieve <fileId> <originalLen> <outputFile> <node1:port> ... <nodeN:port>
+                    int totalFragments = LinearErasureCodec.TOTAL_FRAGMENTS;
+                    requireArgs(args, 4 + totalFragments, "avid-retrieve");
+                    String fileId     = args[1];
+                    long   origLen    = Long.parseLong(args[2]);
+                    Path   outputPath = Paths.get(args[3]);
+                    List<ErasureClient.NodeAddress> nodes = parseNodes(args, 4, totalFragments);
+
+                    AvidFpClient avid = new AvidFpClient();
+                    try {
+                        avid.retrieve(fileId, nodes, origLen, outputPath);
+                    } finally {
+                        avid.shutdown();
+                    }
+                }
+
                 default -> {
                     System.err.println("Unknown sub-command: " + subCommand);
                     printUsage();
@@ -497,6 +538,10 @@ public class Client {
                   java -jar client.jar por-upload   <file> <fileId> <n1:p1> ... <n6:p6>
                   java -jar client.jar por-download <fileId> <outputFile> <n1:p1> ... <n6:p6>
                   java -jar client.jar por-demo     <file> <fileId> <n1:p1> ... <n6:p6>
+
+                  # Phase 5 (AVID-FP: server-to-server echo/ready consensus, 6 nodes)
+                  java -jar client.jar avid-disperse <file> <fileId> <n1:p1> ... <n6:p6>
+                  java -jar client.jar avid-retrieve <fileId> <originalLen> <outputFile> <n1:p1> ... <n6:p6>
 
                 Examples:
                   java -jar client.jar demo testfile.bin shard-0 localhost 7100
