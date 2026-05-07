@@ -10,10 +10,10 @@
     <version>1.0-SNAPSHOT</version>
     <packaging>pom</packaging>
 
-    <name>Distributed Object Store — Parent</name>
+    <name>Distributed Object Store with Integrity</name>
     <description>
-        Fault-tolerant distributed object storage with manual GF(2³) Vandermonde
-        erasure coding and Shacham-Waters Proof of Retrievability (PoR) integrity verification.
+        Fault-tolerant distributed object storage using GF(2^8) Vandermonde erasure coding
+        and Fingerprinted Cross-Checksums (Hendricks, Ganger, Reiter — PODC 2007).
     </description>
 
     <modules>
@@ -27,33 +27,4 @@
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
-
-    <!-- Shared dependency versions (child POMs inherit via dependencyManagement) -->
-
-    <dependencyManagement>
-        <dependencies>
-            <!-- JUnit 5 BOM — resolves all org.junit.jupiter versions consistently -->
-            <dependency>
-                <groupId>org.junit</groupId>
-                <artifactId>junit-bom</artifactId>
-                <version>5.10.2</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-
-        </dependencies>
-    </dependencyManagement>
-
-    <build>
-        <pluginManagement>
-            <plugins>
-                <!-- Maven Surefire 3.x is required to discover JUnit 5 tests -->
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-surefire-plugin</artifactId>
-                    <version>3.2.5</version>
-                </plugin>
-            </plugins>
-        </pluginManagement>
-    </build>
 </project>

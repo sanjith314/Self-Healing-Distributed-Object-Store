@@ -6,17 +6,14 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 /**
- * Evaluation fingerprinting over GF(2^8) as defined in Hendricks, Ganger &amp; Reiter
- * (PODC 2007), Theorem 2.4.
+ * Evaluation fingerprinting over GF(2^8) — Theorem 2.4 from Hendricks et al. (PODC 2007).
  *
- * <p>Each output byte is the evaluation of the data polynomial
- * {@code d(x) = d[0] + d[1]·x + ... + d[L-1]·x^{L-1}} over GF(2^8) at a distinct
- * random evaluation point {@code sⱼ}, derived from the seed. Evaluation is performed
- * using Horner's rule, requiring only GF(2^8) multiply and add.
+ * Each byte of the fingerprint is the evaluation of the data polynomial
+ * d(x) = d[0] + d[1]*x + ... + d[L-1]*x^{L-1} at a distinct random point s_j in GF(2^8).
  *
- * <p>This gives the homomorphic property (Definition 2.5): if {@code dᵢ = Σⱼ bᵢⱼ·dⱼ}
- * (linear combination in GF(2^8)), then {@code fp(s, dᵢ) = Σⱼ bᵢⱼ·fp(s, dⱼ)} because
- * polynomial evaluation is a GF(2^8) ring homomorphism.
+ * The key property is homomorphism: if fragment_i = sum(c_ij * source_j),
+ * then fp(fragment_i) = sum(c_ij * fp(source_j)) — i.e., fingerprints are
+ * compatible with the linear structure of erasure coding.
  */
 public final class HomomorphicFingerprint {
 
@@ -30,95 +27,66 @@ public final class HomomorphicFingerprint {
     }
 
     public HomomorphicFingerprint(byte[] seed, int fingerprintBytes) {
-        if (seed == null || seed.length == 0) {
-            throw new IllegalArgumentException("seed must not be null or empty");
-        }
-        if (fingerprintBytes < 1) {
-            throw new IllegalArgumentException("fingerprintBytes must be >= 1");
-        }
+        if (seed == null || seed.length == 0) throw new IllegalArgumentException("seed must not be empty");
+        if (fingerprintBytes < 1) throw new IllegalArgumentException("fingerprintBytes must be >= 1");
         this.seed = Arrays.copyOf(seed, seed.length);
         this.fingerprintBytes = fingerprintBytes;
     }
 
     /**
-     * Computes the evaluation fingerprint of {@code data}.
-     *
-     * <p>For each output slot {@code j}, the data bytes are interpreted as coefficients of
-     * a polynomial {@code d(x) = d[0] + d[1]·x + ... + d[L-1]·x^{L-1}} over GF(2^8),
-     * and the result is {@code d(sⱼ)} computed by Horner's rule:
-     * <pre>
-     *   fp = d[L-1]
-     *   for i = L-2 downto 0:  fp = GF256_multiply(fp, sⱼ) XOR d[i]
-     * </pre>
-     * This is Theorem 2.4 (evaluation fingerprinting) from Hendricks et al.
+     * Computes the fingerprint of data using Horner's rule at each evaluation point.
+     * fp[j] = d(s_j) where d(x) = d[0] + d[1]*x + ... + d[L-1]*x^{L-1}
      */
     public byte[] fingerprint(byte[] data) {
         byte[] result = new byte[fingerprintBytes];
         for (int slot = 0; slot < fingerprintBytes; slot++) {
             int s = evaluationPoint(slot);
             int fp = 0;
-            for (int i = data.length - 1; i >= 0; i--) {
-                fp = GaloisField256.add(
-                        GaloisField256.multiply(fp, s),
-                        data[i] & 0xFF);
-            }
+            for (int i = data.length - 1; i >= 0; i--)
+                fp = GaloisField256.add(GaloisField256.multiply(fp, s), data[i] & 0xFF);
             result[slot] = (byte) fp;
         }
         return result;
     }
 
+    /**
+     * Computes the expected fingerprint for an encoded fragment given its coding
+     * row coefficients and the fingerprints of the source fragments.
+     * encFp = sum(codingRow[j] * sourceFingerprints[j]) in GF(2^8)
+     */
     public byte[] encodeFingerprint(byte[] codingRow, byte[][] sourceFingerprints) {
-        if (codingRow.length != sourceFingerprints.length) {
+        if (codingRow.length != sourceFingerprints.length)
             throw new IllegalArgumentException("coding row and fingerprint count mismatch");
-        }
         byte[] result = new byte[fingerprintBytes];
-        for (int source = 0; source < sourceFingerprints.length; source++) {
-            int coefficient = codingRow[source] & 0xFF;
-            if (coefficient == 0) {
-                continue;
-            }
-            byte[] sourceFingerprint = sourceFingerprints[source];
-            if (sourceFingerprint.length != fingerprintBytes) {
-                throw new IllegalArgumentException("fingerprint size mismatch");
-            }
-            byte[] scaled = scalarMultiply(sourceFingerprint, coefficient);
-            for (int i = 0; i < fingerprintBytes; i++) {
-                result[i] ^= scaled[i];
-            }
+        for (int src = 0; src < sourceFingerprints.length; src++) {
+            int coeff = codingRow[src] & 0xFF;
+            if (coeff == 0) continue;
+            byte[] scaled = scalarMultiply(sourceFingerprints[src], coeff);
+            for (int i = 0; i < fingerprintBytes; i++) result[i] ^= scaled[i];
         }
         return result;
     }
 
+    /** Element-wise GF(2^8) addition of two fingerprints. */
     public byte[] add(byte[] left, byte[] right) {
-        if (left.length != right.length || left.length != fingerprintBytes) {
-            throw new IllegalArgumentException("fingerprint size mismatch");
-        }
         byte[] result = new byte[fingerprintBytes];
-        for (int i = 0; i < fingerprintBytes; i++) {
+        for (int i = 0; i < fingerprintBytes; i++)
             result[i] = (byte) GaloisField256.add(left[i] & 0xFF, right[i] & 0xFF);
-        }
         return result;
     }
 
+    /** Scalar multiplication of a fingerprint by a GF(2^8) element. */
     public byte[] scalarMultiply(byte[] fp, int scalar) {
-        if (fp.length != fingerprintBytes) {
-            throw new IllegalArgumentException("fingerprint size mismatch");
-        }
         byte[] result = new byte[fingerprintBytes];
-        for (int i = 0; i < fingerprintBytes; i++) {
+        for (int i = 0; i < fingerprintBytes; i++)
             result[i] = (byte) GaloisField256.multiply(scalar, fp[i] & 0xFF);
-        }
         return result;
     }
 
-    public byte[] seed() {
-        return Arrays.copyOf(seed, seed.length);
-    }
+    public byte[] seed() { return Arrays.copyOf(seed, seed.length); }
+    public int fingerprintBytes() { return fingerprintBytes; }
 
-    public int fingerprintBytes() {
-        return fingerprintBytes;
-    }
-
+    /** Derives a seed from the cross-checksum array (acts as a random oracle). */
     public static byte[] deriveSeed(String[] crossChecksum) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         for (String hash : crossChecksum) {
@@ -130,12 +98,8 @@ public final class HomomorphicFingerprint {
     }
 
     /**
-     * Derives the evaluation point {@code sⱼ ∈ GF(2^8)} for output slot {@code j}.
-     *
-     * <p>Computed as the first byte of {@code SHA-256(seed || j)}, mapping each slot to
-     * a distinct, seed-dependent, non-zero field element. Non-zero is enforced because
-     * evaluation at 0 collapses the polynomial to its constant term, losing all
-     * higher-degree information and breaking the homomorphic property for parity fragments.
+     * Derives the evaluation point s_j for slot j from SHA-256(seed || j).
+     * We avoid s=0 since evaluating at 0 would collapse the polynomial.
      */
     private int evaluationPoint(int slot) {
         byte[] input = new byte[seed.length + Integer.BYTES];

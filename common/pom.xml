@@ -13,15 +13,6 @@
 
     <artifactId>common</artifactId>
     <packaging>jar</packaging>
-    <name>Distributed Object Store — Common</name>
-    <description>Shared wire protocol constants, I/O helpers, and SHA-256 hashing utility.</description>
-
-    <dependencies>
-        <!-- JUnit 5 for HashUtil unit tests -->
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter</artifactId>
-            <scope>test</scope>
-        </dependency>
-    </dependencies>
+    <name>Common</name>
+    <description>Shared wire protocol, GF(2^8) field arithmetic, hashing, and fingerprinting.</description>
 </project>
