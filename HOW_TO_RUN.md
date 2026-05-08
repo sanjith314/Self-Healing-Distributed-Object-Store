@@ -2,6 +2,16 @@
 
 You need Java 17+ and Maven.
 
+Install Maven on Mac:
+```bash
+brew install maven
+```
+
+On Linux:
+```bash
+sudo apt install maven
+```
+
 ---
 
 ## Just run the demo
